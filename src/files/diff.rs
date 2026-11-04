@@ -1,0 +1,242 @@
+//! Line diff producing [`PatchHunk`]s that reproduce `after` from `before` when applied in
+//! order with [`crate::files::patch::apply_hunks`].
+//!
+//! Lines keep their terminators, so differences in trailing newlines and line endings are
+//! represented exactly.
+
+use crate::params::PatchHunk;
+
+/// Above this many LCS table cells, the changed middle becomes a single hunk.
+const LCS_CELL_LIMIT: usize = 4_000_000;
+
+/// Hunks transforming `before` into `after`, with `lines` set to the 1-based line range in
+/// `before`. Returns no hunks when the texts are equal.
+pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
+    if before == after {
+        return Vec::new();
+    }
+    if before.is_empty() {
+        return vec![PatchHunk {
+            start_line: Some(1),
+            old_text: String::new(),
+            new_text: after.to_string(),
+        }];
+    }
+    if after.is_empty() {
+        return vec![PatchHunk {
+            start_line: Some(1),
+            old_text: before.to_string(),
+            new_text: String::new(),
+        }];
+    }
+    let a: Vec<&str> = before.split_inclusive('\n').collect();
+    let b: Vec<&str> = after.split_inclusive('\n').collect();
+
+    let mut prefix = 0;
+    while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < a.len() - prefix
+        && suffix < b.len() - prefix
+        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let (a_mid, b_mid) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+
+    let raw_regions: Vec<(usize, usize, usize, usize)> =
+        if a_mid.len().saturating_mul(b_mid.len()) <= LCS_CELL_LIMIT {
+            lcs_regions(a_mid, b_mid)
+                .into_iter()
+                .map(|(o0, o1, n0, n1)| (o0 + prefix, o1 + prefix, n0 + prefix, n1 + prefix))
+                .collect()
+        } else {
+            vec![(prefix, a.len() - suffix, prefix, b.len() - suffix)]
+        };
+
+    // Anchor pure insertions (`o0 == o1`) and pure deletions (`n0 == n1`) on an adjacent
+    // unchanged line so both `old_text` and `new_text` are non-empty, and merge regions that
+    // touch or overlap after anchoring.
+    let mut regions: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(raw_regions.len());
+    for (mut o0, mut o1, mut n0, mut n1) in raw_regions {
+        if o0 == o1 || n0 == n1 {
+            if o0 > 0 && n0 > 0 {
+                o0 -= 1;
+                n0 -= 1;
+            } else if o1 < a.len() && n1 < b.len() {
+                o1 += 1;
+                n1 += 1;
+            }
+        }
+        if let Some(last) = regions.last_mut()
+            && (last.1 >= o0 || last.3 >= n0)
+        {
+            last.1 = last.1.max(o1);
+            last.3 = last.3.max(n1);
+        } else {
+            regions.push((o0, o1, n0, n1));
+        }
+    }
+
+    let mut hunks = Vec::with_capacity(regions.len());
+    for (o0, o1, n0, n1) in regions {
+        let start = o0 as u64 + 1;
+        hunks.push(PatchHunk {
+            start_line: Some(start),
+            old_text: a[o0..o1].concat(),
+            new_text: b[n0..n1].concat(),
+        });
+    }
+    hunks
+}
+
+/// Changed regions `(old_start, old_end, new_start, new_end)` between `a` and `b`.
+fn lcs_regions(a: &[&str], b: &[&str]) -> Vec<(usize, usize, usize, usize)> {
+    let (n, m) = (a.len(), b.len());
+    let width = m + 1;
+    let mut table = vec![0u32; (n + 1) * width];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            table[i * width + j] = if a[i] == b[j] {
+                table[(i + 1) * width + j + 1] + 1
+            } else {
+                table[(i + 1) * width + j].max(table[i * width + j + 1])
+            };
+        }
+    }
+
+    let mut regions = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    let mut open: Option<(usize, usize)> = None;
+    while i < n || j < m {
+        if i < n && j < m && a[i] == b[j] {
+            if let Some((oi, oj)) = open.take() {
+                regions.push((oi, i, oj, j));
+            }
+            i += 1;
+            j += 1;
+        } else {
+            open.get_or_insert((i, j));
+            if j >= m || (i < n && table[(i + 1) * width + j] >= table[i * width + j + 1]) {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+    }
+    if let Some((oi, oj)) = open {
+        regions.push((oi, n, oj, m));
+    }
+    regions
+}
+
+/// Lines `(added, removed)` by a hunk, ignoring unchanged context lines inside it.
+pub fn hunk_stats(hunk: &PatchHunk) -> (usize, usize) {
+    let old: Vec<&str> = hunk.old_text.split_inclusive('\n').collect();
+    let new: Vec<&str> = hunk.new_text.split_inclusive('\n').collect();
+    let mut prefix = 0;
+    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old.len() - prefix
+        && suffix < new.len() - prefix
+        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    (new.len() - prefix - suffix, old.len() - prefix - suffix)
+}
+
+/// Number of leading and trailing lines that `a` and `b` share.
+fn affixes(a: &[&str], b: &[&str]) -> (usize, usize) {
+    let mut prefix = 0;
+    while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < a.len() - prefix
+        && suffix < b.len() - prefix
+        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    (prefix, suffix)
+}
+
+/// Unified-diff body of a hunk: unchanged lines start with a space, removed lines with `-`,
+/// added lines with `+`. A last line without a newline is followed by git's marker.
+pub fn hunk_body(hunk: &PatchHunk) -> String {
+    let old: Vec<&str> = hunk.old_text.split_inclusive('\n').collect();
+    let new: Vec<&str> = hunk.new_text.split_inclusive('\n').collect();
+    let regions = if old.len().saturating_mul(new.len()) <= LCS_CELL_LIMIT {
+        lcs_regions(&old, &new)
+    } else {
+        let (prefix, suffix) = affixes(&old, &new);
+        vec![(prefix, old.len() - suffix, prefix, new.len() - suffix)]
+    };
+    let mut out = String::new();
+    let mut at = 0;
+    for (o0, o1, n0, n1) in regions {
+        push_lines(&mut out, ' ', &old[at..o0]);
+        push_lines(&mut out, '-', &old[o0..o1]);
+        push_lines(&mut out, '+', &new[n0..n1]);
+        at = o1;
+    }
+    push_lines(&mut out, ' ', &old[at..]);
+    out
+}
+
+fn push_lines(out: &mut String, prefix: char, lines: &[&str]) {
+    for line in lines {
+        out.push(prefix);
+        out.push_str(line.strip_suffix('\n').unwrap_or(line));
+        out.push('\n');
+        if !line.ends_with('\n') {
+            out.push_str("\\ No newline at end of file\n");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::files::patch::{apply_hunks, apply_hunks_reverse};
+
+    #[test]
+    fn hunks_reproduce_the_target_and_invert() {
+        let cases = [
+            ("a\nb\nc\n", "a\nB\nc\n"),
+            ("a\nb\n", "a\nb\nc\n"),
+            ("a\nb", "a\nb\nc"),
+            ("a\nb\n", "a\nb"),
+            ("x\n", "y\nx\n"),
+            ("a\n", ""),
+            ("", "a\nb\n"),
+            ("1\n2\n3\n4\n5\n6\n", "1\nX\n3\n4\n5\nY\nZ\n"),
+            ("1\n2\n3\n4\n5\n", "1\n5\n"),
+            ("a\r\nb\r\n", "a\nb\n"),
+            ("same\nsame\nsame\n", "same\nchanged\nsame\nsame\n"),
+            ("dup\na\nb\ndup\n", "dup\nA1\nA2\nA3\nb\nCHANGED\n"),
+        ];
+        for (before, after) in cases {
+            let hunks = compute_hunks(before, after);
+            assert!(!hunks.is_empty(), "no hunks for {before:?} -> {after:?}");
+            let (out, _) = apply_hunks("t", before, &hunks).unwrap();
+            assert_eq!(out, after, "{before:?} -> {after:?}");
+            let back = apply_hunks_reverse("t", after, &hunks).unwrap();
+            assert_eq!(back, before, "reverse {after:?} -> {before:?}");
+        }
+    }
+
+    #[test]
+    fn stats_ignore_context() {
+        let h = PatchHunk {
+            start_line: None,
+            old_text: "a\n".into(),
+            new_text: "a\nb\n".into(),
+        };
+        assert_eq!(hunk_stats(&h), (1, 0));
+    }
+}

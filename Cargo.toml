@@ -1,0 +1,34 @@
+[package]
+name = "stateful-agent-mcp"
+version = "0.2.0"
+authors = ["SnowyField"]
+edition = "2024"
+rust-version = "1.88"
+license = "LGPL-3.0-or-later"
+description = "MCP server for coding agents: Markdown-backed session/turn state, atomic file operations, git-like diff/history/recovery, and gitignore-aware filesystem tools"
+
+[[bin]]
+name = "stateful-agent-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "coding_agent_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.103"
+clap = { version = "4.6.1", features = ["derive"] }
+ignore = "0.4"
+regex = "1.11.1"
+rmcp = { version = "3.8.0", features = ["server", "transport-io"] }
+schemars = "1.2.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+toml = "0.8"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tree-sitter = "0.25"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.24"
