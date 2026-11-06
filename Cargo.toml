@@ -1,5 +1,5 @@
 [package]
-name = "stateful-agent-mcp"
+name = "agent-mcp"
 version = "0.2.0"
 authors = ["SnowyField"]
 edition = "2024"
@@ -7,13 +7,12 @@ rust-version = "1.88"
 license = "LGPL-3.0-or-later"
 description = "MCP server for coding agents: Markdown-backed session/turn state, atomic file operations, git-like diff/history/recovery, and gitignore-aware filesystem tools"
 
-[[bin]]
-name = "stateful-agent-mcp"
-path = "src/main.rs"
+[workspace]
+members = [".", "src-proxy"]
 
-[lib]
-name = "coding_agent_mcp"
-path = "src/lib.rs"
+[[bin]]
+name = "agent-mcp"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.103"

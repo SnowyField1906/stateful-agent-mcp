@@ -1,12 +1,12 @@
-//! `stateful-agent-mcp` binary: an MCP server over stdio.
+//! `agent-mcp` binary: an MCP server over stdio.
 
 use clap::{Parser, ValueEnum};
 use rmcp::{ServiceExt, transport::stdio};
 
-use coding_agent_mcp::params::RegisterProjectParams;
-use coding_agent_mcp::{AgentUseMode, CodingAgentServer, ServerConfig};
+use agent_mcp::workflow::tools::RegisterParams;
+use agent_mcp::{AgentServer, AgentUseMode, ServerConfig};
 
-/// Usage guide that `register_project` serves.
+/// Usage guide that `workflow_register` serves.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Mode {
     /// Agents that run many tool calls in one go (default).
@@ -26,12 +26,12 @@ impl From<Mode> for AgentUseMode {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "stateful-agent-mcp",
+    name = "agent-mcp",
     version,
-    about = "MCP server for coding agents: session/turn state in `.AGENTS/`, atomic file operations, diff/history/recovery, and filesystem tools"
+    about = "MCP server for coding agents: workflow state and atomic file ops, gitignore-aware filesystem search, and Tree-sitter code intelligence"
 )]
 struct Cli {
-    /// Project root to register at startup (agents normally call `register_project` themselves).
+    /// Project root to register at startup (agents normally call `workflow_register` themselves).
     project: Option<String>,
 
     /// Usage guide to serve: `continuous` for agents that run many tool calls in one go,
@@ -54,8 +54,8 @@ struct Cli {
 
 fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
-    let filter =
-        EnvFilter::try_from_env("CODING_AGENT_MCP_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env("STATEFUL_AGENT_MCP_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -74,16 +74,18 @@ async fn main() -> anyhow::Result<()> {
         default_limit: cli.default_limit.max(1),
         max_dir_depth: cli.max_dir_depth.max(1),
     };
-    let server = CodingAgentServer::new(config);
+    let server = AgentServer::new(config);
 
     if let Some(folder_path) = cli.project {
-        let params = RegisterProjectParams {
+        let params = RegisterParams {
             folder_path,
             show_instructions: Some(false),
             show_last_turn_info: Some(false),
         };
         match server.state().workflow_register(params) {
-            Ok(info) => tracing::info!(project = %info["project_root"], "registered startup project"),
+            Ok(info) => {
+                tracing::info!(project = %info["project_root"], "registered startup project")
+            }
             Err(err) => tracing::warn!(error = %err, "startup project registration failed"),
         }
     }

@@ -1,0 +1,20 @@
+//! Shared foundation: errors, configuration, ranges and paging, path specs, text helpers, atomic
+//! writes, lenient parameter parsing, and path resolution and directory walking. Knows no scope
+//! and no project state.
+//!
+//! Layers, each depending only on the ones before it:
+//! `common` → `toolchain` → `workflow` → `filesystem` → `langtool` → `server`.
+
+pub mod config;
+pub mod error;
+pub mod fs;
+pub mod io;
+pub mod params;
+pub mod pathspec;
+pub mod range;
+pub mod text;
+
+pub use config::{AgentUseMode, ServerConfig};
+pub use error::{AgentError, Result};
+pub use params::PageParams;
+pub use range::Range;
