@@ -230,3 +230,26 @@ fn files_of_a_ledger_without_known_copies_are_adopted_as_they_are() {
     assert!(reg.get("external_edits").is_none());
     assert_eq!(text(&tmp, ".AGENTS/.known/a.txt"), "edited\n");
 }
+
+#[test]
+fn touch_without_content_change_does_not_create_false_external_edit() {
+    let tmp = TempProject::new("external-touch");
+    let (state, _) = register(&tmp, false);
+    write(&state, Some("Create"), vec![create("a.txt", "hello\n")]);
+    assert!(tmp.root.join(".AGENTS/.known_index").is_file());
+
+    // Rewrite identical content to change file mtime
+    fs::write(tmp.root.join("a.txt"), "hello\n").unwrap();
+
+    let (_state, reg) = register(&tmp, false);
+    assert!(
+        reg.get("external_edits").is_none(),
+        "no false external edit on unchanged content: {reg}"
+    );
+
+    // Now write genuine change
+    fs::write(tmp.root.join("a.txt"), "hello world\n").unwrap();
+    let (_state, reg) = register(&tmp, false);
+    assert_eq!(reg["external_edits"]["turn_id"], "02.01");
+    assert_eq!(text(&tmp, ".AGENTS/.known/a.txt"), "hello world\n");
+}

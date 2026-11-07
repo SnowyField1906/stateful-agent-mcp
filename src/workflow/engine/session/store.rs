@@ -3,8 +3,12 @@
 //! All writes are atomic (temporary file + rename).
 
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hasher};
 use std::io::ErrorKind;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+use serde::{Deserialize, Serialize};
 
 use crate::common::io::atomic_write;
 use crate::common::{AgentError, Result};
@@ -221,4 +225,74 @@ pub fn prune_empty_dirs(file: &Path, stop_at: &Path) {
         }
         cur = d.parent();
     }
+}
+
+/// Fast metadata fingerprint for a known file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnownEntry {
+    pub size: u64,
+    pub mtime: u64,
+    pub hash: u64,
+}
+
+pub type KnownIndex = BTreeMap<String, KnownEntry>;
+
+/// Fast 64-bit non-cryptographic content hash.
+pub fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(bytes);
+    hasher.finish()
+}
+
+/// Nanoseconds since Unix epoch.
+pub fn meta_mtime(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+pub fn load_known_index(file: &Path, known_dir: &Path, root: &Path) -> Result<KnownIndex> {
+    if !known_dir.exists() {
+        return Ok(KnownIndex::new());
+    }
+    if let Ok(text) = std::fs::read_to_string(file) {
+        if let Ok(index) = serde_json::from_str::<KnownIndex>(&text) {
+            return Ok(index);
+        }
+    }
+    let paths = known_paths(known_dir)?;
+    let mut index = KnownIndex::new();
+    for rel in paths {
+        let disk_path = root.join(&rel);
+        let known_path = known_dir.join(&rel);
+        if let Ok(meta) = std::fs::symlink_metadata(&disk_path) {
+            let size = meta.len();
+            let mtime = meta_mtime(&meta);
+            let bytes = std::fs::read(&known_path).unwrap_or_default();
+            let hash = content_hash(&bytes);
+            index.insert(rel, KnownEntry { size, mtime, hash });
+        } else if let Ok(meta) = std::fs::symlink_metadata(&known_path) {
+            let size = meta.len();
+            let bytes = std::fs::read(&known_path).unwrap_or_default();
+            let hash = content_hash(&bytes);
+            index.insert(
+                rel,
+                KnownEntry {
+                    size,
+                    mtime: 0,
+                    hash,
+                },
+            );
+        }
+    }
+    let _ = save_known_index(file, &index);
+    Ok(index)
+}
+
+pub fn save_known_index(file: &Path, index: &KnownIndex) -> Result<()> {
+    let text = serde_json::to_string(index)
+        .map_err(|e| AgentError::invalid("known_index", e.to_string()))?;
+    atomic_write(file, text.as_bytes())
 }

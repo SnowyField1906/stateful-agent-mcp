@@ -46,38 +46,90 @@ impl Project {
     /// become a closed turn of their own (the active turn when it is still empty) and a new
     /// active turn is opened after it. Returns `None` when nothing changed.
     pub(crate) fn sync_external_edits(&mut self) -> Result<Option<ExternalEdits>> {
-        let known = store::known_paths(&self.known_dir)?;
+        let known: Vec<String> = self.known_index.keys().cloned().collect();
         self.adopt_untracked_files(&known)?;
 
         let mut updates = Vec::new();
         let mut deleted = DeletedMap::new();
         let mut now = Tree::new();
-        for rel in known {
-            let Some(before) = store::read_known(&self.known_dir, &rel)? else {
-                continue;
-            };
-            // A directory or a binary file at the path is not text the ledger can follow.
+        let mut index_refreshes = Vec::new();
+
+        let candidates: Vec<String> = self.known_index.keys().cloned().collect();
+        for rel in candidates {
+            let disk_path = self.root.join(&rel);
+            let meta_opt = std::fs::symlink_metadata(&disk_path).ok();
+
+            if let Some(meta) = &meta_opt {
+                if !meta.is_file() {
+                    continue;
+                }
+                let size = meta.len();
+                let mtime = store::meta_mtime(meta);
+                if let Some(entry) = self.known_index.get(&rel) {
+                    if entry.size == size && entry.mtime == mtime {
+                        // Metadata matches perfectly. File content definitely unchanged!
+                        continue;
+                    }
+                }
+            }
+
             let Ok(disk) = read_text_opt(&self.root, &rel) else {
                 continue;
             };
+
+            let Some(before) = store::read_known(&self.known_dir, &rel)? else {
+                continue;
+            };
+
             if disk.as_deref() == Some(before.as_str()) {
+                if let Some(meta) = &meta_opt {
+                    let size = meta.len();
+                    let mtime = store::meta_mtime(meta);
+                    let hash = store::content_hash(before.as_bytes());
+                    index_refreshes.push((rel, Some(store::KnownEntry { size, mtime, hash })));
+                }
                 continue;
             }
+
             if disk.is_some() && self.active_baseline.contains_key(&rel) {
                 continue;
             }
+
             match &disk {
-                Some(text) => updates.push(FileOp::Patch {
-                    path: rel.clone(),
-                    hunks: compute_hunks(&before, text),
-                }),
+                Some(text) => {
+                    updates.push(FileOp::Patch {
+                        path: rel.clone(),
+                        hunks: compute_hunks(&before, text),
+                    });
+                    if let Some(meta) = &meta_opt {
+                        let size = meta.len();
+                        let mtime = store::meta_mtime(meta);
+                        let hash = store::content_hash(text.as_bytes());
+                        index_refreshes
+                            .push((rel.clone(), Some(store::KnownEntry { size, mtime, hash })));
+                    }
+                }
                 None => {
                     updates.push(FileOp::Delete { path: rel.clone() });
                     deleted.insert(rel.clone(), before);
+                    index_refreshes.push((rel.clone(), None));
                 }
             }
             now.insert(rel, disk);
         }
+
+        for (rel, entry) in index_refreshes {
+            match entry {
+                Some(e) => {
+                    self.known_index.insert(rel, e);
+                }
+                None => {
+                    self.known_index.remove(&rel);
+                }
+            }
+        }
+        let _ = self.save_known_index();
+
         if updates.is_empty() {
             return Ok(None);
         }
@@ -103,26 +155,37 @@ impl Project {
     /// Remember `files` as what the ledger last saw of them; `None` is a file that is gone.
     /// Removals come first, so a path that turns from a file into a directory finds its place
     /// free. Whatever changes tracked files on disk outside a batch has to call this too.
-    pub(crate) fn record_known(&self, files: &Tree) -> Result<()> {
+    pub(crate) fn record_known(&mut self, files: &Tree) -> Result<()> {
         for rel in files
             .iter()
             .filter(|(_, content)| content.is_none())
             .map(|(rel, _)| rel)
         {
             store::write_known(&self.known_dir, rel, None)?;
+            self.known_index.remove(rel);
         }
         for (rel, content) in files {
             if let Some(text) = content {
                 store::write_known(&self.known_dir, rel, Some(text))?;
+                let disk_path = self.root.join(rel);
+                let (size, mtime) = if let Ok(meta) = std::fs::symlink_metadata(&disk_path) {
+                    (meta.len(), store::meta_mtime(&meta))
+                } else {
+                    (text.len() as u64, 0)
+                };
+                let hash = store::content_hash(text.as_bytes());
+                self.known_index
+                    .insert(rel.clone(), store::KnownEntry { size, mtime, hash });
             }
         }
+        self.save_known_index()?;
         Ok(())
     }
 
     /// Start keeping a copy of the files the recorded turns leave in place that have none yet,
     /// as they are on disk: a ledger from before copies were kept has no earlier state to
     /// compare with.
-    fn adopt_untracked_files(&self, known: &[String]) -> Result<()> {
+    fn adopt_untracked_files(&mut self, known: &[String]) -> Result<()> {
         let known: BTreeSet<&str> = known.iter().map(String::as_str).collect();
         for rel in self.files_left_by_turns() {
             if known.contains(rel.as_str()) {
@@ -130,6 +193,15 @@ impl Project {
             }
             if let Ok(Some(text)) = read_text_opt(&self.root, &rel) {
                 store::write_known(&self.known_dir, &rel, Some(&text))?;
+                let disk_path = self.root.join(&rel);
+                let (size, mtime) = if let Ok(meta) = std::fs::symlink_metadata(&disk_path) {
+                    (meta.len(), store::meta_mtime(&meta))
+                } else {
+                    (text.len() as u64, 0)
+                };
+                let hash = store::content_hash(text.as_bytes());
+                self.known_index
+                    .insert(rel, store::KnownEntry { size, mtime, hash });
             }
         }
         Ok(())

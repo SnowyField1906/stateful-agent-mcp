@@ -112,7 +112,7 @@ impl Project {
     }
 
     /// Write `content` to `rel`, or remove the file (and directories it leaves empty) for `None`.
-    fn restore_file(&self, rel: &str, content: Option<&str>) {
+    fn restore_file(&mut self, rel: &str, content: Option<&str>) {
         let path = self.root.join(rel);
         match content {
             Some(text) => {
@@ -120,15 +120,25 @@ impl Project {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let _ = atomic_write(&path, text.as_bytes());
+                let (size, mtime) = if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                    (meta.len(), store::meta_mtime(&meta))
+                } else {
+                    (text.len() as u64, 0)
+                };
+                let hash = store::content_hash(text.as_bytes());
+                self.known_index
+                    .insert(rel.to_string(), store::KnownEntry { size, mtime, hash });
             }
             None => {
                 if std::fs::remove_file(&path).is_ok() {
                     store::prune_empty_dirs(&path, &self.root);
                 }
+                self.known_index.remove(rel);
             }
         }
         // The file holds again what the ledger last saw of it.
         let _ = store::write_known(&self.known_dir, rel, content);
+        let _ = self.save_known_index();
     }
 
     /// Remove the active turn and make `previous` active again.

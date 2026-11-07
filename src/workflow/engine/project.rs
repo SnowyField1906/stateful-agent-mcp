@@ -30,6 +30,8 @@ pub struct Project {
     pub(crate) sessions_dir: PathBuf,
     pub(crate) deleted_dir: PathBuf,
     pub(crate) known_dir: PathBuf,
+    pub(crate) known_index_file: PathBuf,
+    pub(crate) known_index: store::KnownIndex,
     pub(crate) sessions: BTreeMap<u32, Vec<TurnRecord>>,
     pub(crate) deleted: BTreeMap<TurnKey, DeletedMap>,
     /// Pre-turn baseline of files touched so far in the active turn.
@@ -65,6 +67,8 @@ impl Project {
         let sessions_dir = agents_dir.join("sessions");
         let deleted_dir = agents_dir.join(".deleted");
         let known_dir = agents_dir.join(".known");
+        let known_index_file = agents_dir.join(".known_index");
+        let known_index = store::load_known_index(&known_index_file, &known_dir, &root)?;
         for dir in [&sessions_dir, &deleted_dir] {
             std::fs::create_dir_all(dir).map_err(|e| AgentError::io_at(dir, e))?;
         }
@@ -98,6 +102,8 @@ impl Project {
             sessions_dir,
             deleted_dir,
             known_dir,
+            known_index_file,
+            known_index,
             sessions,
             deleted,
             active_baseline: Tree::new(),
@@ -106,6 +112,10 @@ impl Project {
         };
         project.init_active_state()?;
         Ok(project)
+    }
+
+    pub(crate) fn save_known_index(&self) -> Result<()> {
+        store::save_known_index(&self.known_index_file, &self.known_index)
     }
 
     /// Reconstruct `active_baseline` and `active_moves` when the active turn already has recorded
