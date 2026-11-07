@@ -26,5 +26,5 @@ pub mod server;
 pub mod toolchain;
 pub mod workflow;
 
-pub use common::{AgentError, AgentUseMode, ServerConfig};
+pub use common::{AgentError, AgentUseMode, LineNumber, Range, ServerConfig};
 pub use server::AgentServer;

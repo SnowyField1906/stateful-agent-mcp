@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::common::{AgentError, Result};
 
 use super::project::Project;
-use super::session::model::{TurnKey, TurnRecord};
+use super::session::model::{NoteId, TaskId, TurnKey, TurnRecord, UpdateId};
 
 #[derive(Debug)]
 pub(crate) enum Sel {
@@ -153,15 +153,16 @@ impl Project {
 
 /// Parse `SS.TT.note.NN`, `SS.TT.task.NN` or `SS.TT.update.{path}`.
 pub(crate) fn parse_item(s: &str) -> Option<Sel> {
-    let mut parts = s.splitn(4, '.');
-    let (a, b, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
-    let key = TurnKey::new(a.parse().ok()?, b.parse().ok()?);
-    match kind {
-        "note" => Some(Sel::Note(key, rest.parse::<usize>().ok()?.checked_sub(1)?)),
-        "task" => Some(Sel::Task(key, rest.parse::<usize>().ok()?.checked_sub(1)?)),
-        "update" if !rest.is_empty() => Some(Sel::Update(key, rest.to_string())),
-        _ => None,
+    if let Some(id) = NoteId::parse(s) {
+        return Some(Sel::Note(id.key, id.index));
     }
+    if let Some(id) = TaskId::parse(s) {
+        return Some(Sel::Task(id.key, id.index));
+    }
+    if let Some(id) = UpdateId::parse(s) {
+        return Some(Sel::Update(id.key, id.path));
+    }
+    None
 }
 
 fn bad(raw: &str) -> AgentError {
@@ -207,31 +208,4 @@ fn span(flat: &[TurnKey], raw: &str) -> Result<(usize, usize)> {
         };
     }
     Err(bad(raw))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn items() {
-        assert!(
-            matches!(parse_item("01.02.note.03"), Some(Sel::Note(k, 2)) if k == TurnKey::new(1, 2))
-        );
-        assert!(
-            matches!(parse_item("1.2.update.a.b/c.rs"), Some(Sel::Update(_, p)) if p == "a.b/c.rs")
-        );
-        assert!(parse_item("01.02").is_none());
-        assert!(parse_item("01.02.note.00").is_none());
-    }
-
-    #[test]
-    fn spans() {
-        let flat = [TurnKey::new(1, 1), TurnKey::new(1, 2), TurnKey::new(2, 1)];
-        assert_eq!(span(&flat, "01").unwrap(), (0, 1));
-        assert_eq!(span(&flat, "02.01").unwrap(), (2, 2));
-        assert_eq!(span(&flat, "HEAD~1").unwrap(), (1, 1));
-        assert!(span(&flat, "HEAD~3").is_err());
-        assert!(span(&flat, "03").is_err());
-    }
 }

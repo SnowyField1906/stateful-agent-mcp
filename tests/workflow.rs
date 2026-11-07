@@ -11,12 +11,13 @@ mod workflow {
     mod write_tasks;
 }
 
+use agent_mcp::LineNumber;
 use agent_mcp::server::State;
 use agent_mcp::workflow::tools::{NewTurnParams, NoteWriteOp, PatchHunk, TaskWriteOp};
 
 pub(crate) fn hunk(old: &str, new: &str, start_line: Option<u64>) -> PatchHunk {
     PatchHunk {
-        start_line,
+        start_line: start_line.and_then(LineNumber::new),
         old_text: old.to_string(),
         new_text: new.to_string(),
         symbol: None,

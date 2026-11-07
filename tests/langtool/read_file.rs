@@ -82,7 +82,7 @@ fn read_file_isolates_errors_reads_symbols_and_pages_folds_by_rows() {
     // ... and combines with folding.
     let mut item = req("a.rs");
     item.symbol = Some("put".into());
-    item.fold_level = Some(0);
+    item.fold_level = Some(0.into());
     let out = read(vec![item]).unwrap();
     assert!(out.contains("6..9\t    pub fn put(&self) { ... }"), "{out}");
 
@@ -111,14 +111,14 @@ fn read_file_isolates_errors_reads_symbols_and_pages_folds_by_rows() {
 
     // Folded views are capped in rows and continue from the last shown line.
     let mut item = req("big.txt");
-    item.fold_level = Some(5);
+    item.fold_level = Some(5.into());
     let out = read(vec![item]).unwrap();
     assert!(
         out.contains("[1..400 of 450] fold_level 5 indent next lines=401.."),
         "{out}"
     );
     let mut item = req("big.txt");
-    item.fold_level = Some(5);
+    item.fold_level = Some(5.into());
     item.lines = Some("401..".parse().unwrap());
     let out = read(vec![item]).unwrap();
     assert!(
@@ -177,7 +177,7 @@ fn read_file_folds_deep_blocks_with_fold_level_and_pages_by_source_line() {
     let depth = |file: &str, f: &dyn Fn(&mut ReadFileEntry)| {
         let mut item = ReadFileEntry {
             file_path: tmp.root.join(file).to_string_lossy().into_owned(),
-            fold_level: Some(1),
+            fold_level: Some(1.into()),
             ..ReadFileEntry::default()
         };
         f(&mut item);
@@ -194,16 +194,16 @@ fn read_file_folds_deep_blocks_with_fold_level_and_pages_by_source_line() {
         "unexpected output: {one}"
     );
     assert!(one.contains("P { x: 0 }"), "unexpected output: {one}");
-    let outline = depth("a.rs", &|p| p.fold_level = Some(0)).unwrap();
+    let outline = depth("a.rs", &|p| p.fold_level = Some(0.into())).unwrap();
     assert!(
         outline.contains("fn new() -> Self { ... }") && !outline.contains("P { x: 0 }"),
         "unexpected output: {outline}"
     );
 
     // fold_level 2 shows the body; fold_level 0 folds the struct fields as well.
-    let two = depth("a.rs", &|p| p.fold_level = Some(2)).unwrap();
+    let two = depth("a.rs", &|p| p.fold_level = Some(2.into())).unwrap();
     assert!(two.contains("P { x: 0 }"), "unexpected output: {two}");
-    let zero = depth("a.rs", &|p| p.fold_level = Some(0)).unwrap();
+    let zero = depth("a.rs", &|p| p.fold_level = Some(0.into())).unwrap();
     assert!(
         !zero.contains("x: i32") && zero.contains("struct P"),
         "unexpected output: {zero}"

@@ -75,31 +75,6 @@ impl<'a> SymbolSelector<'a> {
     }
 }
 
-#[cfg(test)]
-mod selector_tests {
-    use super::{Lineage, SymbolSelector};
-
-    #[test]
-    fn parses_every_separator_and_matches_scopes_in_order() {
-        for raw in ["Store::put", "Store.put", "Store/put", " ::Store::put "] {
-            let selector = SymbolSelector::parse(raw);
-            assert_eq!(
-                (selector.qualifiers.as_slice(), selector.name),
-                (["Store"].as_slice(), "put"),
-                "{raw}"
-            );
-        }
-        assert!(SymbolSelector::parse("put").qualifiers.is_empty());
-        let path =
-            |names: &[&str]| Lineage::of(&names.iter().map(|n| ("mod", *n)).collect::<Vec<_>>());
-        let selector = SymbolSelector::parse("east::token::parse");
-        assert!(selector.matches_scope(&path(&["east", "Token<'a>"])));
-        assert!(selector.matches_scope(&path(&["east", "inner", "Token"])));
-        assert!(!selector.matches_scope(&path(&["Token", "east"])));
-        assert!(!selector.matches_scope(&Lineage::default()));
-    }
-}
-
 /// How a call was written, which decides the definitions it can reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallKind {

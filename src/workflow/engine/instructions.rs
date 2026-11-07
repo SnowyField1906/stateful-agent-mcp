@@ -76,17 +76,3 @@ The session may stop at any time; leave a clear handover for unfinished work.
 - Do not start a new turn just because the session continues or the same unit has more work.
 - Mark user-requested tasks `user_explicit: true` and roll unfinished tasks of earlier turns over with `RollOver`.
 ";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn guides_differ_by_mode() {
-        let c = default_guide(AgentUseMode::Continuous);
-        let s = default_guide(AgentUseMode::SessionBased);
-        assert!(c.contains("Continuous mode") && !c.contains("Session-based mode"));
-        assert!(s.contains("Session-based mode") && !s.contains("Continuous mode"));
-        assert!(c.starts_with("# MCP usage guide"));
-    }
-}

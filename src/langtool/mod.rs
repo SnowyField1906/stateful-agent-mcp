@@ -9,3 +9,4 @@ pub mod engine;
 pub mod tools;
 
 pub use engine::Syntax;
+pub use engine::fold::FoldLevel;

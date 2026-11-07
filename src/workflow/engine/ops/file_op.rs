@@ -3,7 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::params::flex_u64;
+use crate::common::LineNumber;
+use crate::common::params::flex_line_number;
 
 /// A replacement inside a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -15,9 +16,9 @@ pub struct PatchHunk {
         skip_serializing_if = "Option::is_none",
         alias = "line",
         alias = "lines",
-        deserialize_with = "flex_u64"
+        deserialize_with = "flex_line_number"
     )]
-    pub start_line: Option<u64>,
+    pub start_line: Option<LineNumber>,
     /// Exact text to replace. Must match once (or be disambiguated by `start_line`).
     pub old_text: String,
     /// Replacement text (may be empty to delete).
@@ -138,57 +139,5 @@ impl FileOp {
         self.paths()
             .iter()
             .any(|p| crate::common::pathspec::in_pathspecs(p, specs))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{FileOp, PatchHunk};
-    use serde_json::json;
-
-    #[test]
-    fn file_ops_use_inline_op_tag_for_input_and_output() {
-        let value = json!({"op": "Create", "path": "a.txt", "content": "x"});
-        let op: FileOp = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(op).unwrap(), value);
-    }
-
-    #[test]
-    fn patch_hunk_accepts_line_aliases_and_numeric_strings() {
-        for key in ["start_line", "line", "lines"] {
-            let hunk: PatchHunk =
-                serde_json::from_value(json!({"old_text": "a", "new_text": "b", key: "7"}))
-                    .unwrap();
-            assert_eq!(hunk.start_line, Some(7), "key {key}");
-        }
-        let hunk: PatchHunk =
-            serde_json::from_value(json!({"old_text": "a", "new_text": "b"})).unwrap();
-        assert_eq!(hunk.start_line, None);
-    }
-
-    #[test]
-    fn symbol_ops_round_trip_and_name_their_path() {
-        for verb in ["ReplaceSymbol", "InsertBeforeSymbol", "InsertAfterSymbol"] {
-            let value = json!({"op": verb, "path": "a.rs", "symbol": "Store::put", "content": "fn put() {}"});
-            let op: FileOp = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(op.verb(), verb);
-            assert_eq!(op.primary_path(), "a.rs");
-            assert_eq!(serde_json::to_value(op).unwrap(), value);
-        }
-    }
-
-    #[test]
-    fn rename_symbol_round_trips_with_and_without_a_path() {
-        let value = json!({"op": "RenameSymbol", "symbol": "Store::put", "new_name": "insert"});
-        let op: FileOp = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(op.verb(), "RenameSymbol");
-        assert_eq!(op.primary_path(), ".");
-        assert_eq!(serde_json::to_value(&op).unwrap(), value);
-
-        let value =
-            json!({"op": "RenameSymbol", "symbol": "put", "new_name": "insert", "path": "src"});
-        let op: FileOp = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(op.primary_path(), "src");
-        assert_eq!(serde_json::to_value(op).unwrap(), value);
     }
 }

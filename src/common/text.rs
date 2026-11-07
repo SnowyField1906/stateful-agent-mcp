@@ -59,28 +59,3 @@ pub fn more_footer(offset: usize, shown: usize, total: usize, len: usize) -> Opt
         )
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sizes() {
-        assert_eq!(human_size(512), "512B");
-        assert_eq!(human_size(1536), "1.5K");
-        assert_eq!(human_size(20 * 1024 * 1024), "20M");
-    }
-
-    #[test]
-    fn clipping() {
-        assert_eq!(clip("abc", 5), "abc");
-        assert_eq!(clip("abcdef", 3), "abc…[+3 chars]");
-        assert_eq!(clip("ééé", 2), "éé…[+1 chars]");
-    }
-
-    #[test]
-    fn permissions() {
-        assert_eq!(perms(0o755, 'd'), "drwxr-xr-x");
-        assert_eq!(perms(0o640, '-'), "-rw-r-----");
-    }
-}

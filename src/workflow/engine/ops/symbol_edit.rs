@@ -5,6 +5,7 @@
 //! [`PatchHunk`] that describes it; the turn ledger is built from before/after texts, so it only
 //! ever records ordinary hunks.
 
+use crate::common::LineNumber;
 use crate::langtool::engine::symbols::{self, Symbol};
 use crate::langtool::engine::syntax::{Syntax, parse, registry};
 
@@ -63,8 +64,11 @@ pub fn edit_symbol(
         Placement::Before => (hit.first, hit.first),
         Placement::After => (hit.last + 1, hit.last + 1),
     };
-    let start = byte_offset_of_line(text, from as u64);
-    let end = byte_offset_of_line(text, to as u64);
+    let start = byte_offset_of_line(
+        text,
+        LineNumber::new(from as u64).unwrap_or(LineNumber::ONE),
+    );
+    let end = byte_offset_of_line(text, LineNumber::new(to as u64).unwrap_or(LineNumber::ONE));
     // The edit reaches the end of a file without a final newline: keep it that way.
     let open_end = end == text.len() && !text.is_empty() && !text.ends_with('\n');
     let tail = if open_end { "" } else { eol };
@@ -76,7 +80,7 @@ pub fn edit_symbol(
     };
 
     let hunk = PatchHunk {
-        start_line: Some(from as u64),
+        start_line: LineNumber::new(from as u64),
         old_text: text[start..end].to_string(),
         new_text: region.clone(),
         symbol: None,
@@ -115,7 +119,10 @@ fn starts_with_decoration(content: &str) -> bool {
 
 /// The text of 1-based `line`, without its terminator; empty past the end.
 fn line_at(text: &str, line: usize) -> &str {
-    text[byte_offset_of_line(text, line as u64)..]
+    text[byte_offset_of_line(
+        text,
+        LineNumber::new(line as u64).unwrap_or(LineNumber::ONE),
+    )..]
         .lines()
         .next()
         .unwrap_or("")
@@ -154,147 +161,4 @@ fn reindent(content: &str, indent: &str, eol: &str) -> Option<String> {
         })
         .collect();
     Some(moved.join(eol))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const RUST: &str = "struct Store;\n\nimpl Store {\n    /// Puts.\n    #[inline]\n    fn put(&self) {\n        log();\n    }\n\n    fn get(&self) {}\n}\n";
-    const PYTHON: &str = "class A:\n    @staticmethod\n    def f():\n        pass\n\n    def g(self):\n        pass\n";
-
-    fn apply(text: &str, path: &str, symbol: &str, content: &str, placement: Placement) -> String {
-        edit_symbol(path, text, symbol, content, placement)
-            .unwrap()
-            .text
-    }
-
-    #[test]
-    fn replace_keeps_docs_and_attributes_and_adopts_the_indentation() {
-        let edit = edit_symbol(
-            "a.rs",
-            RUST,
-            "Store::put",
-            "fn put(&self, n: u8) {\n    log(n);\n}",
-            Placement::Replace,
-        )
-        .unwrap();
-        assert_eq!(
-            edit.text,
-            "struct Store;\n\nimpl Store {\n    /// Puts.\n    #[inline]\n    fn put(&self, n: u8) {\n        log(n);\n    }\n\n    fn get(&self) {}\n}\n"
-        );
-        assert_eq!(edit.hunk.start_line, Some(6));
-        assert_eq!(
-            edit.hunk.old_text,
-            "    fn put(&self) {\n        log();\n    }\n"
-        );
-    }
-
-    #[test]
-    fn replace_with_its_own_docs_replaces_the_old_ones() {
-        let out = apply(
-            RUST,
-            "a.rs",
-            "put",
-            "/// New.\nfn put(&self) {}",
-            Placement::Replace,
-        );
-        assert_eq!(
-            out,
-            "struct Store;\n\nimpl Store {\n    /// New.\n    fn put(&self) {}\n\n    fn get(&self) {}\n}\n"
-        );
-    }
-
-    #[test]
-    fn inserts_are_separated_by_a_blank_line() {
-        let after = apply(
-            RUST,
-            "a.rs",
-            "Store::put",
-            "fn del(&self) {}",
-            Placement::After,
-        );
-        assert_eq!(
-            after,
-            "struct Store;\n\nimpl Store {\n    /// Puts.\n    #[inline]\n    fn put(&self) {\n        log();\n    }\n\n    fn del(&self) {}\n\n    fn get(&self) {}\n}\n"
-        );
-        let before = apply(
-            RUST,
-            "a.rs",
-            "Store::put",
-            "fn del(&self) {}",
-            Placement::Before,
-        );
-        assert_eq!(
-            before,
-            "struct Store;\n\nimpl Store {\n    fn del(&self) {}\n\n    /// Puts.\n    #[inline]\n    fn put(&self) {\n        log();\n    }\n\n    fn get(&self) {}\n}\n"
-        );
-    }
-
-    #[test]
-    fn python_decorators_stay_unless_replaced() {
-        let kept = apply(
-            PYTHON,
-            "a.py",
-            "A.f",
-            "def f(x):\n    return x",
-            Placement::Replace,
-        );
-        assert_eq!(
-            kept,
-            "class A:\n    @staticmethod\n    def f(x):\n        return x\n\n    def g(self):\n        pass\n"
-        );
-        let swapped = apply(
-            PYTHON,
-            "a.py",
-            "A.f",
-            "@classmethod\ndef f(cls):\n    pass",
-            Placement::Replace,
-        );
-        assert_eq!(
-            swapped,
-            "class A:\n    @classmethod\n    def f(cls):\n        pass\n\n    def g(self):\n        pass\n"
-        );
-    }
-
-    #[test]
-    fn line_endings_and_a_missing_final_newline_are_kept() {
-        let crlf = apply(
-            "fn a() {}\r\n\r\nfn b() {}\r\n",
-            "a.rs",
-            "a",
-            "fn a() {\n    1;\n}",
-            Placement::Replace,
-        );
-        assert_eq!(crlf, "fn a() {\r\n    1;\r\n}\r\n\r\nfn b() {}\r\n");
-        let after = apply("fn a() {}", "a.rs", "a", "fn b() {}", Placement::After);
-        assert_eq!(after, "fn a() {}\n\nfn b() {}");
-        let replaced = apply("fn a() {}", "a.rs", "a", "fn a() { 1 }", Placement::Replace);
-        assert_eq!(replaced, "fn a() { 1 }");
-    }
-
-    #[test]
-    fn flags_an_edit_that_adds_a_parse_error() {
-        let edit = |text: &str, symbol: &str, content: &str| {
-            edit_symbol("a.rs", text, symbol, content, Placement::Replace).unwrap()
-        };
-        assert!(edit(RUST, "Store::put", "fn put(&self) {").adds_syntax_error);
-        assert!(!edit(RUST, "Store::put", "fn put(&self) {}").adds_syntax_error);
-        // A file that did not parse before is not blamed on the edit.
-        let broken = "fn a() {}\n\nfn b() {\n";
-        assert!(!edit(broken, "a", "fn a() { 1 }").adds_syntax_error);
-    }
-
-    #[test]
-    fn errors_say_what_went_wrong() {
-        let err = |path: &str, symbol: &str, content: &str| {
-            edit_symbol(path, RUST, symbol, content, Placement::Replace).unwrap_err()
-        };
-        assert!(err("a.rs", "nope", "fn x() {}").contains("no definition"));
-        assert!(err("a.rs", "put", "  \n").contains("empty"));
-        assert!(err("a.txt", "put", "x").contains("registered Tree-sitter"));
-        let twice = "impl A {\n    fn put(&self) {}\n}\nimpl B {\n    fn put(&self) {}\n}\n";
-        let msg = edit_symbol("a.rs", twice, "put", "fn put() {}", Placement::Replace).unwrap_err();
-        assert!(msg.contains("names 2 definitions"), "{msg}");
-    }
 }

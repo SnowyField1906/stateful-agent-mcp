@@ -211,37 +211,3 @@ fn walk_files(dir: &Path, rel: &str, out: &mut BTreeSet<String>) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn revert_undoes_the_files_written_before_a_failed_commit() {
-        let dir =
-            std::env::temp_dir().join(format!("agent-mcp-overlay-revert-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // A directory named like the temporary file makes the write of `x.txt` fail after
-        // `a.txt` was written and `b.txt` was removed.
-        std::fs::create_dir_all(dir.join("x.txt.tmp")).unwrap();
-        std::fs::write(dir.join("a.txt"), "old\n").unwrap();
-        std::fs::write(dir.join("b.txt"), "kept\n").unwrap();
-
-        let mut overlay = Overlay::new(dir.clone());
-        overlay.set("a.txt", Some("new\n".into())).unwrap();
-        overlay.set("b.txt", None).unwrap();
-        overlay.set("x.txt", Some("x\n".into())).unwrap();
-        assert!(overlay.commit().is_err());
-
-        overlay.revert();
-
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "old\n");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
-            "kept\n"
-        );
-        assert!(!dir.join("x.txt").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}

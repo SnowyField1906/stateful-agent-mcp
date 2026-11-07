@@ -3,17 +3,25 @@
 
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::workflow::engine::items::clean_title;
 use crate::workflow::engine::ops::FileOp;
 
 /// Position of a turn: `(session, turn)`, displayed as `SS.TT`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TurnKey {
     pub session: u32,
     pub turn: u32,
+}
+
+impl std::str::FromStr for TurnKey {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse(s).ok_or("expected SS.TT")
+    }
 }
 
 impl TurnKey {
@@ -31,6 +39,98 @@ impl TurnKey {
 impl fmt::Display for TurnKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:02}.{:02}", self.session, self.turn)
+    }
+}
+
+/// Typed identifier for a note: `{session}.{turn}.note.{index}`, e.g. `01.02.note.01`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NoteId {
+    pub key: TurnKey,
+    pub index: usize,
+}
+
+impl NoteId {
+    pub const fn new(key: TurnKey, index: usize) -> Self {
+        Self { key, index }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut parts = s.trim().splitn(4, '.');
+        let (a, b, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        if kind != "note" {
+            return None;
+        }
+        let key = TurnKey::new(a.parse().ok()?, b.parse().ok()?);
+        let num: usize = rest.parse().ok()?;
+        Some(Self::new(key, num.checked_sub(1)?))
+    }
+}
+
+impl fmt::Display for NoteId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.note.{:02}", self.key, self.index + 1)
+    }
+}
+
+/// Typed identifier for a handover task: `{session}.{turn}.task.{index}`, e.g. `01.02.task.01`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TaskId {
+    pub key: TurnKey,
+    pub index: usize,
+}
+
+impl TaskId {
+    pub const fn new(key: TurnKey, index: usize) -> Self {
+        Self { key, index }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut parts = s.trim().splitn(4, '.');
+        let (a, b, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        if kind != "task" {
+            return None;
+        }
+        let key = TurnKey::new(a.parse().ok()?, b.parse().ok()?);
+        let num: usize = rest.parse().ok()?;
+        Some(Self::new(key, num.checked_sub(1)?))
+    }
+}
+
+impl fmt::Display for TaskId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.task.{:02}", self.key, self.index + 1)
+    }
+}
+
+/// Typed identifier for a turn file update: `{session}.{turn}.update.{path}`, e.g. `01.02.update.src/lib.rs`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UpdateId {
+    pub key: TurnKey,
+    pub path: String,
+}
+
+impl UpdateId {
+    pub fn new(key: TurnKey, path: impl Into<String>) -> Self {
+        Self {
+            key,
+            path: path.into(),
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut parts = s.trim().splitn(4, '.');
+        let (a, b, kind, rest) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        if kind != "update" || rest.is_empty() {
+            return None;
+        }
+        let key = TurnKey::new(a.parse().ok()?, b.parse().ok()?);
+        Some(Self::new(key, rest))
+    }
+}
+
+impl fmt::Display for UpdateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.update.{}", self.key, self.path)
     }
 }
 
@@ -175,7 +275,7 @@ impl TurnRecord {
     }
 
     pub fn note_id(key: TurnKey, idx: usize) -> String {
-        format!("{key}.note.{:02}", idx + 1)
+        NoteId::new(key, idx).to_string()
     }
 
     pub fn note_ids(&self) -> Vec<String> {
@@ -189,7 +289,7 @@ impl TurnRecord {
             .iter()
             .enumerate()
             .map(|(i, t)| HandoverTaskDto {
-                id: format!("{}.task.{:02}", self.key, i + 1),
+                id: TaskId::new(self.key, i).to_string(),
                 content: t.content.clone(),
                 user_explicit: t.user_explicit,
                 rolled_over_from: t.rolled_over_from.clone(),

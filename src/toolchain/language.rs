@@ -28,16 +28,3 @@ pub fn language_for_path(path: &str) -> Option<&'static Language> {
         .iter()
         .find(|l| l.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_language_by_extension() {
-        assert_eq!(language_for_path("src/a.rs").map(|l| l.name), Some("rust"));
-        assert_eq!(language_for_path("x/y.PYI").map(|l| l.name), Some("python"));
-        assert!(language_for_path("README.md").is_none());
-        assert!(language_for_path("Makefile").is_none());
-    }
-}

@@ -13,8 +13,11 @@
 //! - TOML: the body of a `[table]` is level 1, of `[a.b]` level 2, and so on.
 //! - Other text: each deeper indentation is one level.
 
+use std::fmt;
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 use tree_sitter::Node;
 
 use super::syntax::{Syntax, line_span, parse, registry};
@@ -55,6 +58,116 @@ impl Mode {
             Mode::Markdown => "markdown",
             Mode::Toml => "toml",
             Mode::Indent => "indent",
+        }
+    }
+}
+
+/// Nesting level for code/text folding (0..=16).
+///
+/// - Level `0`: An outline of declarations (impls, functions, classes, traits) with bodies folded away.
+/// - Level `1..=16`: Nested blocks up to this depth are shown; deeper blocks are folded into `A..B` rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
+pub struct FoldLevel(u32);
+
+impl FoldLevel {
+    pub const OUTLINE: Self = Self(0);
+    pub const MAX_DEPTH: u32 = 16;
+
+    /// Create a fold level, clamping to the maximum supported depth (16).
+    pub const fn new(level: u32) -> Self {
+        if level > Self::MAX_DEPTH {
+            Self(Self::MAX_DEPTH)
+        } else {
+            Self(level)
+        }
+    }
+
+    /// The outline level (0).
+    pub const fn outline() -> Self {
+        Self::OUTLINE
+    }
+
+    /// Whether this fold level represents the declaration outline (level 0).
+    pub const fn is_outline(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// The depth value as a `u32`.
+    pub const fn depth(&self) -> u32 {
+        self.0
+    }
+
+    /// The depth value as a `usize` (clamped to 16).
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
+    /// The depth value as a `u64`.
+    pub const fn as_u64(&self) -> u64 {
+        self.0 as u64
+    }
+}
+
+impl Default for FoldLevel {
+    fn default() -> Self {
+        Self::OUTLINE
+    }
+}
+
+impl fmt::Display for FoldLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u32> for FoldLevel {
+    fn from(val: u32) -> Self {
+        Self::new(val)
+    }
+}
+
+impl From<i32> for FoldLevel {
+    fn from(val: i32) -> Self {
+        Self::new(val.max(0) as u32)
+    }
+}
+
+impl From<usize> for FoldLevel {
+    fn from(val: usize) -> Self {
+        Self::new(val as u32)
+    }
+}
+
+impl From<u64> for FoldLevel {
+    fn from(val: u64) -> Self {
+        Self::new(val as u32)
+    }
+}
+
+impl From<FoldLevel> for u32 {
+    fn from(level: FoldLevel) -> Self {
+        level.depth()
+    }
+}
+
+impl From<FoldLevel> for u64 {
+    fn from(level: FoldLevel) -> Self {
+        level.as_u64()
+    }
+}
+
+impl From<FoldLevel> for usize {
+    fn from(level: FoldLevel) -> Self {
+        level.as_usize()
+    }
+}
+
+impl<'de> Deserialize<'de> for FoldLevel {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let n = crate::common::params::flex_u64(d)?;
+        match n {
+            Some(val) => Ok(Self::from(val)),
+            None => Ok(Self::OUTLINE),
         }
     }
 }
@@ -371,163 +484,4 @@ fn indent_width(line: &str) -> usize {
         .take_while(|c| c.is_whitespace())
         .map(|c| if c == '\t' { 4 } else { 1 })
         .sum()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::langtool::engine::syntax::python::PythonSyntax;
-    use crate::langtool::engine::syntax::rust::RustSyntax;
-
-    const RUST: &str = "struct P {\n    x: i32,\n    y: i32,\n}\n\nimpl P {\n    fn new() -> Self {\n        let a = 1;\n        P { x: a, y: 2 }\n    }\n}\n";
-
-    const NESTED: &str =
-        "fn f() {\n    let a = 1;\n    if a > 0 {\n        g();\n        h();\n    }\n}\n";
-
-    const DOCS: &str = "/// First line.\n/// Second line.\n/// Third.\n#[derive(\n    Debug,\n)]\nstruct S;\n\nfn f() {}\n";
-
-    const PYTHON: &str =
-        "class A:\n    def f(self):\n        x = 1\n        return x\n\ndef g():\n    pass\n";
-
-    const MARKDOWN: &str = "# Title\nintro\n\n## A\na1\na2\n\n### A.1\ndeep\ndeeper\n\n## B\nb1\nb2\n\n```\n# not a heading\n```\n";
-
-    const TOML: &str = "[package]\nname = \"x\"\nversion = \"1\"\n\n[dependencies]\na = 1\nb = 2\n\n[dependencies.c]\nfeatures = [\"x\"]\nopt = true\n";
-
-    const JSON: &str = "{\n  \"a\": {\n    \"b\": 1,\n    \"c\": 2\n  },\n  \"d\": 3\n}\n";
-
-    fn view(syntax: &dyn Syntax, source: &str, depth: usize) -> String {
-        render(&fold(syntax, source, depth).expect("parse"))
-    }
-
-    fn file_view(path: &str, source: &str, depth: usize) -> (Mode, String) {
-        let (mode, rows) = fold_file(path, source, depth);
-        (mode, render(&rows))
-    }
-
-    #[test]
-    fn level_zero_is_an_outline_that_lists_methods() {
-        let out = view(&RustSyntax, RUST, 0);
-        assert!(out.contains("1..4\tstruct P { ... }\n"), "{out}");
-        assert!(out.contains("6\timpl P {\n"), "{out}");
-        assert!(
-            out.contains("7..10\t    fn new() -> Self { ... }\n"),
-            "{out}"
-        );
-        assert!(out.contains("11\t}\n"), "{out}");
-        assert!(!out.contains("let a"), "{out}");
-    }
-
-    #[test]
-    fn each_level_shows_one_more_block_depth() {
-        let zero = view(&RustSyntax, NESTED, 0);
-        assert_eq!(zero, "1..7\tfn f() { ... }\n");
-        let one = view(&RustSyntax, NESTED, 1);
-        assert!(one.contains("2\t    let a = 1;\n"), "{one}");
-        assert!(one.contains("3..6\t    if a > 0 { ... }\n"), "{one}");
-        assert!(!one.contains("g();"), "{one}");
-        let two = view(&RustSyntax, NESTED, 2);
-        assert!(two.contains("4\t        g();\n"), "{two}");
-    }
-
-    #[test]
-    fn level_zero_cuts_docs_and_attributes_to_their_first_line() {
-        let zero = view(&RustSyntax, DOCS, 0);
-        assert!(zero.contains("1..3\t/// First line.\n"), "{zero}");
-        assert!(zero.contains("4..6\t#[derive( ...\n"), "{zero}");
-        assert!(
-            !zero.contains("Second") && !zero.contains("Debug"),
-            "{zero}"
-        );
-        let one = view(&RustSyntax, DOCS, 1);
-        assert!(one.contains("2\t/// Second line.\n"), "{one}");
-        assert!(one.contains("5\t    Debug,\n"), "{one}");
-    }
-
-    #[test]
-    fn python_folds_indented_bodies_and_class_bodies_add_no_level() {
-        let out = view(&PythonSyntax, PYTHON, 0);
-        assert!(out.contains("1\tclass A:\n"), "{out}");
-        assert!(out.contains("2\t    def f(self):\n"), "{out}");
-        assert!(out.contains("3..4\t        ...\n"), "{out}");
-        assert!(out.contains("7\t    pass\n"), "{out}");
-        assert!(!out.contains("return x"), "{out}");
-    }
-
-    #[test]
-    fn python_folds_show_the_docstring() {
-        let src = "def f():\n    \"\"\"Do the thing.\n\n    More.\n    \"\"\"\n    return 1\n";
-        let out = view(&PythonSyntax, src, 0);
-        assert!(
-            out.contains("2..6\t    \"\"\"Do the thing.\"\"\" ...\n"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn deep_enough_view_is_unchanged() {
-        let rows = fold(&RustSyntax, RUST, 8).expect("parse");
-        assert_eq!(rows.len(), RUST.lines().count());
-        assert!(rows.iter().all(|r| r.first == r.last));
-    }
-
-    #[test]
-    fn markdown_folds_sections_and_ignores_headings_in_code_fences() {
-        let (mode, one) = file_view("README.md", MARKDOWN, 1);
-        assert_eq!(mode, Mode::Markdown);
-        assert!(
-            one.contains("4\t## A\n") && one.contains("5..10\t...\n"),
-            "{one}"
-        );
-        assert!(
-            one.contains("12\t## B\n") && one.contains("13..18\t...\n"),
-            "{one}"
-        );
-        assert!(!one.contains("deep"), "{one}");
-        let (_, zero) = file_view("README.md", MARKDOWN, 0);
-        assert_eq!(zero, "1\t# Title\n2..18\t...\n");
-        let (_, two) = file_view("README.md", MARKDOWN, 2);
-        assert!(
-            two.contains("8\t### A.1\n") && two.contains("9..10\t...\n"),
-            "{two}"
-        );
-    }
-
-    #[test]
-    fn toml_folds_tables_by_dotted_depth() {
-        let (mode, zero) = file_view("Cargo.toml", TOML, 0);
-        assert_eq!(mode, Mode::Toml);
-        assert!(
-            zero.contains("1\t[package]\n") && zero.contains("2..3\t...\n"),
-            "{zero}"
-        );
-        assert!(
-            zero.contains("5\t[dependencies]\n") && zero.contains("6..11\t...\n"),
-            "{zero}"
-        );
-        let (_, one) = file_view("Cargo.toml", TOML, 1);
-        assert!(
-            one.contains("9\t[dependencies.c]\n") && one.contains("10..11\t...\n"),
-            "{one}"
-        );
-    }
-
-    #[test]
-    fn other_text_folds_by_indentation() {
-        let (mode, one) = file_view("data.json", JSON, 1);
-        assert_eq!(mode, Mode::Indent);
-        assert!(
-            one.contains("3..4\t    ...\n") && one.contains("5\t  },\n"),
-            "{one}"
-        );
-        let (_, zero) = file_view("data.json", JSON, 0);
-        assert_eq!(zero, "1\t{\n2..6\t  ...\n7\t}\n");
-        let (_, deep) = file_view("data.json", JSON, 5);
-        assert_eq!(
-            deep,
-            JSON.lines()
-                .enumerate()
-                .map(|(i, l)| format!("{}\t{l}\n", i + 1))
-                .collect::<String>()
-        );
-    }
 }

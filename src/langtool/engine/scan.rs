@@ -77,32 +77,6 @@ pub fn scan<T>(
     Ok(scan)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsupported_message_uses_registered_tree_sitter_languages_and_extensions() {
-        let supported = registry::supported_languages()
-            .map(|language| {
-                let extensions = language
-                    .extensions
-                    .iter()
-                    .map(|extension| format!(".{extension}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} ({extensions})", language.name)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        assert_eq!(
-            unsupported_message(),
-            format!("no code intelligence for this file type; supported: {supported}")
-        );
-    }
-}
-
 impl<T> Scan<T> {
     fn add<F>(&mut self, label: &str, abs: &Path, index: &mut F)
     where

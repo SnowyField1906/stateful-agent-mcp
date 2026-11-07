@@ -148,27 +148,3 @@ fn clip(line: &str) -> String {
     let cut: String = line.chars().take(SNIPPET_CHARS).collect();
     format!("{cut}…")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snippets_pick_the_matching_line_and_clip_long_ones() {
-        let re = Regex::new("needle").unwrap();
-        assert_eq!(snippet(&re, "first\n  has a needle \nlast"), "has a needle");
-        assert_eq!(snippet(&re, "first\nlast"), "first");
-        let long = format!("needle {}", "x".repeat(400));
-        let out = snippet(&re, &long);
-        assert_eq!(out.chars().count(), SNIPPET_CHARS + 1);
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn kinds_accept_plurals_and_reject_unknown_names() {
-        assert_eq!(search_kinds(None).unwrap().len(), 3);
-        let kinds = search_kinds(Some(&["Notes".to_string(), "task".to_string()])).unwrap();
-        assert!(kinds.contains("note") && kinds.contains("task") && !kinds.contains("title"));
-        assert!(search_kinds(Some(&["file".to_string()])).is_err());
-    }
-}

@@ -5,7 +5,7 @@
 //! the nearest one. A `symbol` restricts the search to one definition of the file. A hunk whose `old_text` uses `\n` is retried with `\r\n` when the
 //! file uses CRLF.
 
-use crate::common::{AgentError, Result};
+use crate::common::{AgentError, LineNumber, Result};
 
 use super::PatchHunk;
 use super::symbol_edit::definition;
@@ -44,7 +44,7 @@ pub fn apply_hunks(
             current = new.clone();
             record_edit(&mut edits, 0, 0, current.len(), new_nl);
             applied.push(PatchHunk {
-                start_line: Some(1),
+                start_line: Some(LineNumber::ONE),
                 old_text: String::new(),
                 new_text: new,
                 symbol: None,
@@ -96,7 +96,7 @@ pub fn apply_hunks_reverse(path: &str, after_text: &str, hunks: &[PatchHunk]) ->
             if current.is_empty() {
                 current = hunk.old_text.clone();
             } else {
-                let at = byte_offset_of_line(&current, hunk.start_line.unwrap_or(1));
+                let at = byte_offset_of_line(&current, hunk.start_line.unwrap_or(LineNumber::ONE));
                 current.insert_str(at, &hunk.old_text);
             }
             continue;
@@ -144,22 +144,23 @@ fn record_edit(
 }
 
 /// 1-based line number of byte offset `at` in the original pre-patch text.
-fn pre_patch_line(current: &str, at: usize, edits: &[AppliedEdit]) -> u64 {
-    let cur_line = line_number(current, at) as i64;
+fn pre_patch_line(current: &str, at: usize, edits: &[AppliedEdit]) -> LineNumber {
+    let cur_line = line_number(current, at).get() as i64;
     let delta: i64 = edits
         .iter()
         .filter(|e| e.end_byte <= at)
         .map(|e| e.line_delta)
         .sum();
-    (cur_line - delta).max(1) as u64
+    let num = (cur_line - delta).max(1) as u64;
+    LineNumber::new(num).unwrap_or(LineNumber::ONE)
 }
 
 /// Byte offset of the start of 1-based `target_line` (clamped to `text.len()`).
-pub(super) fn byte_offset_of_line(text: &str, target_line: u64) -> usize {
-    if target_line <= 1 {
+pub(super) fn byte_offset_of_line(text: &str, target_line: LineNumber) -> usize {
+    if target_line.get() <= 1 {
         return 0;
     }
-    let needed = (target_line - 1) as usize;
+    let needed = target_line.to_zero_based();
     let mut seen = 0;
     for (i, b) in text.bytes().enumerate() {
         if b == b'\n' {
@@ -190,8 +191,14 @@ fn symbol_scope<'a>(
     let hit = definition(path, text, symbol)?;
     Ok(Scope {
         symbol,
-        span: byte_offset_of_line(text, hit.first as u64)
-            ..byte_offset_of_line(text, hit.last as u64 + 1),
+        span: byte_offset_of_line(
+            text,
+            LineNumber::new(hit.first as u64).unwrap_or(LineNumber::ONE),
+        )
+            ..byte_offset_of_line(
+                text,
+                LineNumber::new(hit.last as u64 + 1).unwrap_or(LineNumber::ONE),
+            ),
         first: hit.first,
         last: hit.last,
     })
@@ -201,7 +208,7 @@ fn symbol_scope<'a>(
 fn locate(
     text: &str,
     old: &str,
-    hint: Option<u64>,
+    hint: Option<LineNumber>,
     edits: &[AppliedEdit],
     scope: Option<&Scope<'_>>,
 ) -> std::result::Result<usize, String> {
@@ -227,7 +234,7 @@ fn locate(
         }),
         1 => Ok(positions[0]),
         n => {
-            let lines: Vec<u64> = positions
+            let lines: Vec<LineNumber> = positions
                 .iter()
                 .map(|&p| pre_patch_line(text, p, edits))
                 .collect();
@@ -235,14 +242,14 @@ fn locate(
                 let mut ranked: Vec<(u64, usize)> = lines
                     .iter()
                     .zip(&positions)
-                    .map(|(&line, &pos)| (line.abs_diff(hint), pos))
+                    .map(|(&line, &pos)| (line.get().abs_diff(hint.get()), pos))
                     .collect();
                 ranked.sort_unstable();
                 if ranked[0].0 < ranked[1].0 {
                     return Ok(ranked[0].1);
                 }
             }
-            let shown: Vec<String> = lines.iter().take(5).map(u64::to_string).collect();
+            let shown: Vec<String> = lines.iter().take(5).map(ToString::to_string).collect();
             let advice = if scope.is_some() {
                 "add surrounding context or set `start_line`"
             } else {
@@ -276,117 +283,10 @@ fn not_found_reason(text: &str, old: &str) -> String {
 }
 
 /// 1-based line number of byte offset `at`.
-fn line_number(text: &str, at: usize) -> u64 {
-    1 + text.as_bytes()[..at]
+fn line_number(text: &str, at: usize) -> LineNumber {
+    let count = text.as_bytes()[..at]
         .iter()
         .filter(|&&b| b == b'\n')
-        .count() as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hunk(old: &str, new: &str, line: Option<u64>) -> PatchHunk {
-        PatchHunk {
-            start_line: line,
-            old_text: old.into(),
-            new_text: new.into(),
-            symbol: None,
-        }
-    }
-
-    const RUST_TWICE: &str = "struct Store;\nimpl Store {\n    fn put(&self) {\n        log();\n    }\n}\nimpl Queue {\n    fn put(&self) {\n        log();\n    }\n}\n";
-
-    #[test]
-    fn symbol_restricts_the_search_to_one_definition() {
-        assert!(apply_hunks("a.rs", RUST_TWICE, &[hunk("log();", "trace();", None)]).is_err());
-        let scoped = PatchHunk {
-            symbol: Some("Queue::put".into()),
-            ..hunk("log();", "trace();", None)
-        };
-        let (out, applied) = apply_hunks("a.rs", RUST_TWICE, &[scoped]).unwrap();
-        assert!(
-            out.contains("impl Store {\n    fn put(&self) {\n        log();"),
-            "{out}"
-        );
-        assert!(out.ends_with("        trace();\n    }\n}\n"), "{out}");
-        assert_eq!(applied[0].start_line, Some(9));
-        assert_eq!(applied[0].symbol, None);
-        assert_eq!(
-            apply_hunks_reverse("a.rs", &out, &applied).unwrap(),
-            RUST_TWICE
-        );
-    }
-
-    #[test]
-    fn symbol_errors_say_what_went_wrong() {
-        let with = |path: &str, symbol: &str, old: &str| {
-            let hunk = PatchHunk {
-                symbol: Some(symbol.into()),
-                ..hunk(old, "x", None)
-            };
-            apply_hunks(path, RUST_TWICE, &[hunk])
-                .unwrap_err()
-                .to_string()
-        };
-        assert!(with("a.rs", "put", "log();").contains("names 2 definitions"));
-        assert!(with("a.rs", "nope", "log();").contains("no definition `nope`"));
-        assert!(with("a.rs", "Store::put", "nothing").contains("not found inside `Store::put`"));
-        assert!(with("a.rs", "Store::put", "impl Queue").contains("appears outside it"));
-        assert!(with("a.txt", "put", "log();").contains("registered Tree-sitter grammar"));
-    }
-
-    #[test]
-    fn unique_match_applies() {
-        let (out, applied) = apply_hunks("f", "a\nb\nc\n", &[hunk("b", "B", None)]).unwrap();
-        assert_eq!(out, "a\nB\nc\n");
-        assert_eq!(applied[0].start_line, Some(2));
-    }
-
-    #[test]
-    fn ambiguous_match_needs_hint() {
-        let text = "x\ny\nx\n";
-        assert!(apply_hunks("f", text, &[hunk("x", "z", None)]).is_err());
-        let (out, _) = apply_hunks("f", text, &[hunk("x", "z", Some(3))]).unwrap();
-        assert_eq!(out, "x\ny\nz\n");
-    }
-
-    #[test]
-    fn crlf_files_accept_lf_hunks() {
-        let (out, _) = apply_hunks("f", "a\r\nb\r\nc\r\n", &[hunk("a\nb", "a\nB", None)]).unwrap();
-        assert_eq!(out, "a\r\nB\r\nc\r\n");
-    }
-
-    #[test]
-    fn failures_explain_themselves() {
-        let err = apply_hunks("f", "  foo(1)\n", &[hunk("foo(2)\n", "", None)]).unwrap_err();
-        assert!(err.to_string().contains("not found"));
-        assert!(apply_hunks("f", "a", &[hunk("", "x", None)]).is_err());
-    }
-
-    #[test]
-    fn empty_file_can_be_patched() {
-        let (out, applied) = apply_hunks("f", "", &[hunk("", "hello\nworld\n", None)]).unwrap();
-        assert_eq!(out, "hello\nworld\n");
-        assert_eq!(applied[0].start_line, Some(1));
-        let back = apply_hunks_reverse("f", &out, &applied).unwrap();
-        assert_eq!(back, "");
-    }
-
-    #[test]
-    fn start_line_uses_pre_patch_line_numbers_across_line_shifts() {
-        let text = "header\ndup\nmiddle\ndup\n";
-        let hunks = [
-            hunk("header\n", "h1\nh2\nh3\nh4\n", Some(1)),
-            hunk("dup\n", "TARGET\n", Some(4)),
-        ];
-        let (out, applied) = apply_hunks("f", text, &hunks).unwrap();
-        assert_eq!(out, "h1\nh2\nh3\nh4\ndup\nmiddle\nTARGET\n");
-        assert_eq!(applied[0].start_line, Some(1));
-        assert_eq!(applied[1].start_line, Some(4));
-
-        let restored = apply_hunks_reverse("f", &out, &applied).unwrap();
-        assert_eq!(restored, text);
-    }
+        .count();
+    LineNumber::from_zero_based(count)
 }

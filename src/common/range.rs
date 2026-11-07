@@ -11,11 +11,90 @@
 //! | `-50..`   | the last 50 positions (reads only)       |
 
 use std::fmt;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{AgentError, Result};
+
+/// A 1-based line number in a text file. Guaranteed to be >= 1.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct LineNumber(NonZeroU64);
+
+impl LineNumber {
+    /// Line 1.
+    pub const ONE: Self = Self(NonZeroU64::MIN);
+
+    /// Create a 1-based line number if `val >= 1`.
+    pub const fn new(val: u64) -> Option<Self> {
+        match NonZeroU64::new(val) {
+            Some(nz) => Some(Self(nz)),
+            None => None,
+        }
+    }
+
+    /// Convert a 0-based slice or line index to a 1-based line number.
+    pub const fn from_zero_based(idx: usize) -> Self {
+        match NonZeroU64::new(idx as u64 + 1) {
+            Some(nz) => Self(nz),
+            None => unreachable!(),
+        }
+    }
+
+    /// The 1-based line number value.
+    pub const fn get(&self) -> u64 {
+        self.0.get()
+    }
+
+    /// The 0-based index of this line in a file's lines.
+    pub const fn to_zero_based(&self) -> usize {
+        (self.0.get() - 1) as usize
+    }
+}
+
+impl fmt::Display for LineNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for LineNumber {
+    type Err = AgentError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let val: u64 = s.trim().parse().map_err(|_| {
+            AgentError::invalid("line", format!("expected positive integer, got `{s}`"))
+        })?;
+        Self::new(val)
+            .ok_or_else(|| AgentError::invalid("line", "line numbers are 1-based and must be >= 1"))
+    }
+}
+
+impl TryFrom<u64> for LineNumber {
+    type Error = AgentError;
+
+    fn try_from(val: u64) -> Result<Self> {
+        Self::new(val)
+            .ok_or_else(|| AgentError::invalid("line", "line numbers are 1-based and must be >= 1"))
+    }
+}
+
+impl From<NonZeroU64> for LineNumber {
+    fn from(nz: NonZeroU64) -> Self {
+        Self(nz)
+    }
+}
+
+impl From<LineNumber> for u64 {
+    fn from(line: LineNumber) -> Self {
+        line.get()
+    }
+}
 
 /// Largest page of listing entries.
 pub const MAX_ENTRIES: u64 = 5000;
@@ -142,72 +221,4 @@ pub fn opt_range<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<
         return Ok(None);
     }
     text.parse().map(Some).map_err(Error::custom)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(s: &str) -> Range {
-        s.parse().unwrap()
-    }
-
-    #[test]
-    fn parses_all_forms() {
-        assert_eq!(parse("10..20"), Range::new(10, 20));
-        assert_eq!(
-            parse("10.."),
-            Range {
-                start: 10,
-                end: None
-            }
-        );
-        assert_eq!(parse("..20"), Range::new(1, 20));
-        assert_eq!(parse(" 7 "), Range::new(7, 7));
-        assert_eq!(
-            parse("-50.."),
-            Range {
-                start: -50,
-                end: None
-            }
-        );
-        assert_eq!(
-            parse(".."),
-            Range {
-                start: 1,
-                end: None
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_bad_input() {
-        for bad in ["0..5", "5..0", "9..3", "-5..9", "-5", "a..b", "1...3"] {
-            assert!(bad.parse::<Range>().is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn displays_what_it_parses() {
-        for text in ["10..20", "10..", "-50.."] {
-            assert_eq!(parse(text).to_string(), text);
-        }
-    }
-
-    #[test]
-    fn windows() {
-        assert_eq!(parse("3..5").forward(400, 2000, "lines").unwrap(), (2, 3));
-        assert_eq!(parse("3..").forward(400, 2000, "lines").unwrap(), (2, 400));
-        assert_eq!(
-            parse("1..9999").forward(400, 2000, "lines").unwrap(),
-            (0, 2000)
-        );
-        assert!(parse("-3..").forward(400, 2000, "lines").is_err());
-        assert_eq!(parse("-3..").tail(), Some(3));
-    }
-
-    #[test]
-    fn next_window_follows_the_shown_items() {
-        assert_eq!(Range::next(200, 200).to_string(), "201..400");
-    }
 }

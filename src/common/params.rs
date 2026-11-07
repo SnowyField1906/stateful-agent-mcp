@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::Result;
-use super::range::{MAX_ENTRIES, Range, opt_range};
+use super::range::{LineNumber, MAX_ENTRIES, Range, opt_range};
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -30,6 +30,16 @@ pub fn flex_u64<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error
                 t.parse::<u64>().map(Some).map_err(Error::custom)
             }
         }
+    }
+}
+
+/// `Option<LineNumber>` from a number or numeric string (empty string means absent).
+pub fn flex_line_number<'de, D: Deserializer<'de>>(d: D) -> Result<Option<LineNumber>, D::Error> {
+    use serde::de::Error;
+    match flex_u64(d)? {
+        None => Ok(None),
+        Some(0) => Err(Error::custom("line numbers are 1-based and must be >= 1")),
+        Some(n) => Ok(LineNumber::new(n)),
     }
 }
 

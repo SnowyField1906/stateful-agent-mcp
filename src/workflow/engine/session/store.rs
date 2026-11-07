@@ -3,6 +3,7 @@
 //! All writes are atomic (temporary file + rename).
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::hash::{DefaultHasher, Hasher};
 use std::io::ErrorKind;
 use std::path::Path;
@@ -227,21 +228,54 @@ pub fn prune_empty_dirs(file: &Path, stop_at: &Path) {
     }
 }
 
+/// 64-bit non-cryptographic content hash fingerprint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ContentHash(pub u64);
+
+impl ContentHash {
+    pub const fn new(val: u64) -> Self {
+        Self(val)
+    }
+
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for ContentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+impl From<u64> for ContentHash {
+    fn from(val: u64) -> Self {
+        Self::new(val)
+    }
+}
+
+impl From<ContentHash> for u64 {
+    fn from(h: ContentHash) -> Self {
+        h.0
+    }
+}
+
 /// Fast metadata fingerprint for a known file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KnownEntry {
     pub size: u64,
     pub mtime: u64,
-    pub hash: u64,
+    pub hash: ContentHash,
 }
 
 pub type KnownIndex = BTreeMap<String, KnownEntry>;
 
 /// Fast 64-bit non-cryptographic content hash.
-pub fn content_hash(bytes: &[u8]) -> u64 {
+pub fn content_hash(bytes: &[u8]) -> ContentHash {
     let mut hasher = DefaultHasher::new();
     hasher.write(bytes);
-    hasher.finish()
+    ContentHash::new(hasher.finish())
 }
 
 /// Nanoseconds since Unix epoch.

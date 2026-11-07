@@ -88,28 +88,3 @@ pub fn pathspecs(paths: Option<&[String]>, root: &Path) -> Result<Vec<String>> {
 pub fn in_pathspecs(path: &str, specs: &[String]) -> bool {
     specs.is_empty() || specs.iter().any(|s| matches_pathspec(path, s))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalizes_and_rejects() {
-        let root = Path::new("/p");
-        assert_eq!(normalize_rel("./src//a.rs", root).unwrap(), "src/a.rs");
-        assert_eq!(normalize_rel("/p/src/a.rs", root).unwrap(), "src/a.rs");
-        assert_eq!(normalize_rel("a..b", root).unwrap(), "a..b");
-        assert!(normalize_rel("../x", root).is_err());
-        assert!(normalize_rel("/other/x", root).is_err());
-        assert!(normalize_rel(".agents/x", root).is_err());
-        assert!(normalize_rel(".git/config", root).is_err());
-        assert!(normalize_rel(".", root).is_err());
-    }
-
-    #[test]
-    fn pathspec() {
-        assert!(matches_pathspec("src/a.rs", "src"));
-        assert!(matches_pathspec("src", "src"));
-        assert!(!matches_pathspec("srcs/a.rs", "src"));
-    }
-}

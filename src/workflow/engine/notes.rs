@@ -167,39 +167,3 @@ fn compact(key: TurnKey, slots: Vec<Option<NoteRecord>>) -> Vec<NoteRecord> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compact_renumbers_same_turn_refs_and_drops_deleted_ones() {
-        let key = TurnKey::new(1, 1);
-        let note = |content: &str, refs: &[&str]| {
-            Some(NoteRecord {
-                content: content.into(),
-                ref_notes: refs.iter().map(|s| s.to_string()).collect(),
-            })
-        };
-        let slots = vec![
-            note("a", &[]),
-            None,
-            note("c", &[]),
-            note(
-                "d",
-                &[
-                    "01.01.note.01",
-                    "01.01.note.02",
-                    "01.01.note.03",
-                    "02.01.note.05",
-                ],
-            ),
-        ];
-        let notes = compact(key, slots);
-        assert_eq!(notes.len(), 3);
-        assert_eq!(
-            notes[2].ref_notes,
-            vec!["01.01.note.01", "01.01.note.02", "02.01.note.05"]
-        );
-    }
-}

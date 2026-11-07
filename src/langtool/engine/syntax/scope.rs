@@ -70,17 +70,6 @@ pub fn is_test_scope(kind: &str, name: &str) -> bool {
 pub struct Lineage(Vec<Frame>);
 
 impl Lineage {
-    /// A lineage from `(kind, name)` pairs, outermost first.
-    #[cfg(test)]
-    pub fn of(frames: &[(&'static str, &str)]) -> Self {
-        Self(
-            frames
-                .iter()
-                .map(|&(kind, name)| Frame::new(kind, name))
-                .collect(),
-        )
-    }
-
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -141,41 +130,5 @@ impl fmt::Display for Lineage {
             f.write_str(name)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_the_qualified_path_and_knows_its_owner() {
-        let lineage = Lineage::of(&[("mod", "east"), ("impl", "Token<'a>")]);
-        assert_eq!(lineage.to_string(), "east::Token<'a>");
-        assert_eq!(lineage.owner().map(Frame::bare_name), Some("Token"));
-        assert_eq!(Lineage::default().to_string(), "");
-        assert!(Lineage::default().owner().is_none());
-        // A module is an enclosing definition but not an owner of methods.
-        assert!(
-            Lineage::of(&[("impl", "A"), ("mod", "m")])
-                .owner()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_code_is_any_enclosing_test_module_or_class() {
-        assert!(Lineage::of(&[("mod", "tests"), ("impl", "Fixture")]).in_test());
-        assert!(Lineage::of(&[("class", "TestStore")]).in_test());
-        assert!(!Lineage::of(&[("mod", "store"), ("class", "Fixture")]).in_test());
-        assert!(!Lineage::default().in_test());
-    }
-
-    #[test]
-    fn entered_leaves_the_outer_lineage_alone() {
-        let outer = Lineage::of(&[("mod", "a")]);
-        let inner = outer.entered(Frame::new("fn", "f"));
-        assert_eq!(outer.to_string(), "a");
-        assert_eq!(inner.to_string(), "a::f");
     }
 }

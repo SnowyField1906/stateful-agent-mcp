@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::common::fs::resolve::{Scope, Target};
-use crate::common::params::{Names, flex_u64};
+use crate::common::params::Names;
 use crate::common::range::opt_range;
 use crate::common::text::clip;
 use crate::common::{AgentError, Range, Result};
@@ -17,6 +17,8 @@ use crate::langtool::engine::scan::unsupported_message;
 use crate::langtool::engine::symbols::{self, Symbol};
 use crate::langtool::engine::syntax::{SymbolSelector, registry};
 use crate::workflow::Project;
+
+pub use crate::langtool::engine::fold::FoldLevel;
 
 pub const DESCRIPTION: &str = "Read 1-32 text files in one call; a file that fails is reported in place and the others are still read. Raw lines are numbered `N<tab>text`; the header shows `[first..last of total]` and `next lines=START..` when more remains. `fold_level` gives a structure view instead: registered Tree-sitter code folds by syntax, Markdown and TOML by heading, other text by indentation. Folded content is one row `A..B<tab>text`, where `A..B` are the hidden source lines to read next. Level 0 is an outline: declarations including methods, doc comments cut to their first line. `symbol` reads one definition by name (`Type::name`, `Class.name` or `mod/Type/name` to qualify) with its docs and attributes (Rust, Python). `at_implicit_id` reads the files as of a past turn.";
 
@@ -46,8 +48,8 @@ pub struct ReadFileEntry {
     /// Fold everything nested deeper than this level (0-16) into rows `A..B<tab>text`: code by
     /// block, Markdown and TOML by heading, other text by indentation. `0` is an outline of
     /// declarations including methods. Omit to read raw lines.
-    #[serde(default, deserialize_with = "flex_u64")]
-    pub fold_level: Option<u64>,
+    #[serde(default)]
+    pub fold_level: Option<FoldLevel>,
     /// Read only definitions with this name in a file with a registered Tree-sitter grammar, with their doc comments and
     /// attributes: `name`, `Type::name`, `Class.name` or `mod/Type/name`. Works with `fold_level`, not with `lines`.
     #[serde(default)]
@@ -99,7 +101,6 @@ const DEFAULT_LINES: usize = 400;
 const MAX_LINES: usize = 2000;
 const MAX_FILE_BYTES: u64 = 16 << 20;
 const LINE_CLIP: usize = 500;
-const MAX_FOLD_LEVEL: u64 = 16;
 const MAX_FILES: usize = 32;
 /// Definitions shown for one `symbol`.
 const MAX_SYMBOL_HITS: usize = 8;
@@ -270,7 +271,7 @@ struct View<'a> {
     numbered: bool,
     crlf: bool,
     /// Rows of the whole file with the mode and level that produced them.
-    folded: Option<(fold::Mode, usize, Vec<Row>)>,
+    folded: Option<(fold::Mode, FoldLevel, Vec<Row>)>,
 }
 
 impl<'a> View<'a> {
@@ -281,10 +282,10 @@ impl<'a> View<'a> {
         at: Option<&'a str>,
         req: &ReadFileEntry,
     ) -> Self {
-        let folded = req.fold_level.map(|raw| {
-            let level = raw.min(MAX_FOLD_LEVEL) as usize;
+        let folded = req.fold_level.map(|lvl| {
+            let level = lvl.as_usize();
             let (mode, rows) = fold::fold_file(path, text, level);
-            (mode, level, rows)
+            (mode, lvl, rows)
         });
         View {
             path,

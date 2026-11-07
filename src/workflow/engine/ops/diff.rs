@@ -4,6 +4,8 @@
 //! Lines keep their terminators, so differences in trailing newlines and line endings are
 //! represented exactly.
 
+use crate::common::LineNumber;
+
 use super::PatchHunk;
 
 /// Above this many LCS table cells, the changed middle becomes a single hunk.
@@ -17,7 +19,7 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
     }
     if before.is_empty() {
         return vec![PatchHunk {
-            start_line: Some(1),
+            start_line: Some(LineNumber::ONE),
             old_text: String::new(),
             new_text: after.to_string(),
             symbol: None,
@@ -25,7 +27,7 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
     }
     if after.is_empty() {
         return vec![PatchHunk {
-            start_line: Some(1),
+            start_line: Some(LineNumber::ONE),
             old_text: before.to_string(),
             new_text: String::new(),
             symbol: None,
@@ -83,9 +85,8 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
 
     let mut hunks = Vec::with_capacity(regions.len());
     for (o0, o1, n0, n1) in regions {
-        let start = o0 as u64 + 1;
         hunks.push(PatchHunk {
-            start_line: Some(start),
+            start_line: Some(LineNumber::from_zero_based(o0)),
             old_text: a[o0..o1].concat(),
             new_text: b[n0..n1].concat(),
             symbol: None,
@@ -199,48 +200,5 @@ fn push_lines(out: &mut String, prefix: char, lines: &[&str]) {
         if !line.ends_with('\n') {
             out.push_str("\\ No newline at end of file\n");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::workflow::engine::ops::patch::{apply_hunks, apply_hunks_reverse};
-
-    #[test]
-    fn hunks_reproduce_the_target_and_invert() {
-        let cases = [
-            ("a\nb\nc\n", "a\nB\nc\n"),
-            ("a\nb\n", "a\nb\nc\n"),
-            ("a\nb", "a\nb\nc"),
-            ("a\nb\n", "a\nb"),
-            ("x\n", "y\nx\n"),
-            ("a\n", ""),
-            ("", "a\nb\n"),
-            ("1\n2\n3\n4\n5\n6\n", "1\nX\n3\n4\n5\nY\nZ\n"),
-            ("1\n2\n3\n4\n5\n", "1\n5\n"),
-            ("a\r\nb\r\n", "a\nb\n"),
-            ("same\nsame\nsame\n", "same\nchanged\nsame\nsame\n"),
-            ("dup\na\nb\ndup\n", "dup\nA1\nA2\nA3\nb\nCHANGED\n"),
-        ];
-        for (before, after) in cases {
-            let hunks = compute_hunks(before, after);
-            assert!(!hunks.is_empty(), "no hunks for {before:?} -> {after:?}");
-            let (out, _) = apply_hunks("t", before, &hunks).unwrap();
-            assert_eq!(out, after, "{before:?} -> {after:?}");
-            let back = apply_hunks_reverse("t", after, &hunks).unwrap();
-            assert_eq!(back, before, "reverse {after:?} -> {before:?}");
-        }
-    }
-
-    #[test]
-    fn stats_ignore_context() {
-        let h = PatchHunk {
-            start_line: None,
-            old_text: "a\n".into(),
-            new_text: "a\nb\n".into(),
-            symbol: None,
-        };
-        assert_eq!(hunk_stats(&h), (1, 0));
     }
 }

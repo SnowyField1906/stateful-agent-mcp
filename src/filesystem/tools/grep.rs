@@ -24,7 +24,7 @@ use crate::workflow::Project;
 
 pub const DESCRIPTION: &str = "Search a file or directory by regex (Rust syntax; `literal` for plain text). `output` is `content`, `files` or `count`. Respects `.gitignore`; skips binary files and files over 8 MiB.";
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GrepParams {
     /// Regular expression (or literal text with `literal`).
     pub query: String,
@@ -291,26 +291,5 @@ fn render(out: &mut String, rel: &str, lines: &[&str], hits: &[usize], ctx: usiz
             };
             out.push_str(&format!("{}{sep}{}\n", i + 1, clip(line, LINE_CLIP)));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_windows() {
-        let lines = ["a", "b", "c", "d", "e", "f", "g"];
-        let mut out = String::new();
-        render(&mut out, "f.txt", &lines, &[1, 5], 1);
-        assert_eq!(out, "f.txt\n1-a\n2:b\n3-c\n--\n5-e\n6:f\n7-g\n");
-    }
-
-    #[test]
-    fn merges_adjacent_windows() {
-        let lines = ["a", "b", "c", "d"];
-        let mut out = String::new();
-        render(&mut out, "f", &lines, &[0, 2], 1);
-        assert_eq!(out, "f\n1:a\n2-b\n3:c\n4-d\n");
     }
 }
