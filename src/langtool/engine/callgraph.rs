@@ -4,17 +4,23 @@
 //! `Self::new()` and `self.run()` stay in the caller's type, `Type::new()` goes to that type,
 //! `module::run()` goes to free functions of that module, and `run()` goes to free functions.
 //! Rust `value.run()` calls use an inferred receiver type when available; unknown receivers
-//! remain possible method targets marked with `?`. Every edge ends with `@line`, the lines of
+//! remain possible method targets marked with `?`. A receiver typed `&dyn Trait` or
+//! `impl Trait` reaches the declaration of the trait and every `impl Trait for T`, also marked `?`. Every edge ends with `@line`, the lines of
 //! the calling function that make the call. Only the [`Syntax`] trait is used; walking
 //! directories, reading files and paginating results belong to the tool handler.
 
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use super::aliases::{aliases as file_aliases, resolve};
 use super::name_match::ranked_names;
-use super::syntax::{Alias, CallKind, CallSite, Lineage, SymbolSelector, Syntax, parse, unit_span};
+use super::syntax::{
+    Alias, CallKind, CallSite, Frame, Lineage, SymbolSelector, Syntax, parse, unit_span,
+};
+use crate::common::{AgentError, Result};
 
 /// A function or method definition and the calls it makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,11 +54,49 @@ pub struct Entry {
     pub func: FnInfo,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Incoming,
     Outgoing,
+    #[default]
     Both,
+}
+
+impl Direction {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "both" => Ok(Self::Both),
+            "incoming" => Ok(Self::Incoming),
+            "outgoing" => Ok(Self::Outgoing),
+            other => Err(AgentError::invalid(
+                "direction",
+                format!("`{other}`; expected incoming, outgoing or both"),
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Direction {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Direction::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for Direction {
+    fn from(s: &str) -> Self {
+        Direction::parse(s).unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+impl From<String> for Direction {
+    fn from(s: String) -> Self {
+        Direction::from(s.as_str())
+    }
 }
 
 pub struct Query<'a> {
@@ -216,6 +260,7 @@ fn accepts(call: &CallSite, caller: &Entry, def: &Entry) -> bool {
             owner.is_some() && !(caller.file == def.file && caller.func.first == def.func.first)
         }
         CallKind::MethodOf(receiver) => owner.is_some_and(|o| o.bare_name() == receiver.as_str()),
+        CallKind::Dyn(name) => owner.is_some_and(|o| o.implements(name)),
         CallKind::Own => owner.is_some_and(|o| {
             caller
                 .func
@@ -230,10 +275,15 @@ fn accepts(call: &CallSite, caller: &Entry, def: &Entry) -> bool {
     }
 }
 
+/// Whether the language adapter knew the type or trait of the receiver of a method call.
+fn typed_receiver(call: &CallSite) -> bool {
+    matches!(&call.kind, CallKind::MethodOf(_) | CallKind::Dyn(_))
+}
+
 /// Keep same-named methods as uncertain candidates when an inferred receiver type has no
 /// matching method in the indexed code.
 fn possible_method_target(call: &CallSite, caller: &Entry, def: &Entry) -> bool {
-    matches!(&call.kind, CallKind::MethodOf(_))
+    typed_receiver(call)
         && def.func.name == call.name
         && def.func.scope.owner().is_some()
         && !(caller.file == def.file && caller.func.first == def.func.first)
@@ -247,7 +297,7 @@ fn matching_defs<'a>(ctx: &Ctx<'a>, call: &CallSite, caller: &Entry) -> Vec<&'a 
         .iter()
         .filter(|def| ctx.visible(def) && accepts(call, caller, def))
         .collect();
-    if exact.is_empty() && matches!(&call.kind, CallKind::MethodOf(_)) {
+    if exact.is_empty() && typed_receiver(call) {
         return ctx
             .index
             .iter()
@@ -257,10 +307,11 @@ fn matching_defs<'a>(ctx: &Ctx<'a>, call: &CallSite, caller: &Entry) -> Vec<&'a 
     exact
 }
 
-/// A method edge is uncertain when its receiver type is unknown, unmatched, or matches multiple definitions.
+/// A method edge is uncertain when its receiver type is unknown, unmatched, or matches multiple
+/// definitions. A trait receiver is always uncertain: other implementations may exist.
 fn possible_edge(ctx: &Ctx<'_>, call: &CallSite, caller: &Entry) -> bool {
     match &call.kind {
-        CallKind::Method => true,
+        CallKind::Method | CallKind::Dyn(_) => true,
         CallKind::MethodOf(_) => {
             ctx.index
                 .iter()
@@ -455,13 +506,13 @@ fn walk(
             });
             cur = Some(out.len() - 1);
         }
-        scope.push(def.kind, &def.name);
+        scope.push(Frame::of(&def));
         entered = true;
     } else if let (Some(i), Some(mut site)) = (current, syntax.call_site(node, source)) {
         if matches!(site.kind, CallKind::Free | CallKind::Any) {
             site.name = resolve(imports, &site.name).to_string();
         }
-        if let CallKind::MethodOf(receiver) = &mut site.kind {
+        if let CallKind::MethodOf(receiver) | CallKind::Dyn(receiver) = &mut site.kind {
             *receiver = resolve(imports, receiver).to_string();
         }
         let line = node.start_position().row + 1;

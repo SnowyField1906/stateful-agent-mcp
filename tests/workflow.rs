@@ -1,5 +1,6 @@
 mod common;
 mod workflow {
+    mod external_edits;
     mod get_files_diff;
     mod get_turns;
     mod new_turn;

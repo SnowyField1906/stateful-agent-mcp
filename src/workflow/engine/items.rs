@@ -16,20 +16,26 @@ use super::session::model::TurnKey;
 pub enum NoteWriteOp {
     /// Add a note at the end.
     Append {
+        #[serde(alias = "content")]
         note_content: String,
         #[serde(default)]
         ref_notes: Option<Vec<String>>,
     },
     /// Replace a note's content. `note_id` is a full ID of the active turn or its index.
     Edit {
+        #[serde(alias = "id")]
         note_id: String,
+        #[serde(alias = "content")]
         note_content: String,
         #[serde(default)]
         ref_notes: Option<Vec<String>>,
     },
     /// Remove a note. IDs within one call refer to the numbering at the start of the call; the
     /// remaining notes are renumbered when the call is done.
-    Delete { note_id: String },
+    Delete {
+        #[serde(alias = "id")]
+        note_id: String,
+    },
 }
 
 /// One change to the active turn's handover tasks.
@@ -38,6 +44,7 @@ pub enum NoteWriteOp {
 pub enum TaskWriteOp {
     /// Add a task at the end.
     Append {
+        #[serde(alias = "content")]
         task_content: String,
         #[serde(default)]
         user_explicit: Option<bool>,
@@ -45,16 +52,24 @@ pub enum TaskWriteOp {
     /// Replace a task's content. `task_id` is a full ID of the active turn, its index, or the
     /// ID it was rolled over from.
     Edit {
+        #[serde(alias = "id")]
         task_id: String,
+        #[serde(alias = "content")]
         task_content: String,
         #[serde(default)]
         user_explicit: Option<bool>,
     },
     /// Remove a task. IDs within one call refer to the numbering at the start of the call; the
     /// remaining tasks are renumbered when the call is done.
-    Delete { task_id: String },
+    Delete {
+        #[serde(alias = "id")]
+        task_id: String,
+    },
     /// Copy an unfinished task from an earlier turn into the active turn.
-    RollOver { task_id: String },
+    RollOver {
+        #[serde(alias = "id")]
+        task_id: String,
+    },
 }
 
 /// Parameters for `workflow_get_notes` and `workflow_get_tasks`.

@@ -41,11 +41,15 @@ pub(crate) fn write_files_with_paths(
     project: &mut Project,
     p: WriteFilesParams,
 ) -> Result<(Value, Vec<String>)> {
+    let external = project.sync_external_edits()?;
     let batch = project.apply_files(&p.ops)?;
     let title = project.name_active_turn(p.title.as_deref())?;
     let changed_paths = batch.changed_paths.clone();
     let mut out = json!(batch);
     out["turn_id"] = json!(project.active.to_string());
+    if let Some(external) = &external {
+        out["external_edits"] = external.report();
+    }
     title.report(project.active_turn()?, &mut out);
     Ok((out, changed_paths))
 }

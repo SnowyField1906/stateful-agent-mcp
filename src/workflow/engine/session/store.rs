@@ -1,4 +1,5 @@
-//! Disk persistence for `.AGENTS/sessions/*.md` and `.AGENTS/.deleted/{SS.TT}/*`.
+//! Disk persistence for `.AGENTS/sessions/*.md`, `.AGENTS/.deleted/{SS.TT}/*` and
+//! `.AGENTS/.known/*`.
 //! All writes are atomic (temporary file + rename).
 
 use std::collections::BTreeMap;
@@ -139,6 +140,75 @@ pub fn remove_turn_deleted(dir: &Path, key: TurnKey) -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(AgentError::io_at(&turn_dir, e)),
+    }
+}
+
+/// Paths of the files kept under `.AGENTS/.known/`, sorted. Each holds the content the ledger
+/// last saw of the project file at that path.
+pub fn known_paths(dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    collect_known_paths(dir, "", &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn collect_known_paths(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(AgentError::io_at(dir, e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| AgentError::io_at(dir, e))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".tmp") {
+            continue;
+        }
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let path = entry.path();
+        let ty = entry.file_type().map_err(|e| AgentError::io_at(&path, e))?;
+        if ty.is_dir() {
+            collect_known_paths(&path, &rel, out)?;
+        } else if ty.is_file() {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// The content the ledger last saw of the project file `rel`; `None` when no copy is kept.
+pub fn read_known(dir: &Path, rel: &str) -> Result<Option<String>> {
+    let path = dir.join(rel);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(AgentError::io_at(&path, e)),
+    }
+}
+
+/// Keep `content` as what the ledger last saw of `rel`; `None` drops the copy and the
+/// directories it leaves empty.
+pub fn write_known(dir: &Path, rel: &str, content: Option<&str>) -> Result<()> {
+    let path = dir.join(rel);
+    match content {
+        Some(text) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| AgentError::io_at(parent, e))?;
+            }
+            atomic_write(&path, text.as_bytes())
+        }
+        None => match std::fs::remove_file(&path) {
+            Ok(()) => {
+                prune_empty_dirs(&path, dir);
+                Ok(())
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(AgentError::io_at(&path, e)),
+        },
     }
 }
 

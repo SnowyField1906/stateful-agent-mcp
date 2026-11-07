@@ -59,6 +59,53 @@ pub fn opt_string_or_vec<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<S
     Ok(Option::<OneOrMany>::deserialize(d)?.map(Into::into))
 }
 
+/// One or more names, written in JSON as a string or a list of strings. Tool parameters that
+/// take a symbol or a query use it so that one call can ask about several.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Names(Vec<String>);
+
+impl Names {
+    /// The names without surrounding whitespace, empty entries and repeats, in the order given.
+    pub fn cleaned(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for name in self
+            .0
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+        {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+}
+
+impl<'de> Deserialize<'de> for Names {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self(OneOrMany::deserialize(d)?.into()))
+    }
+}
+
+impl From<&str> for Names {
+    fn from(name: &str) -> Self {
+        Self(vec![name.to_string()])
+    }
+}
+
+impl From<String> for Names {
+    fn from(name: String) -> Self {
+        Self(vec![name])
+    }
+}
+
+impl From<Vec<String>> for Names {
+    fn from(names: Vec<String>) -> Self {
+        Self(names)
+    }
+}
+
 const LIST_HINT: &str = r#"expected an array of objects, for example [{"op": "Append", ...}]"#;
 
 /// A list of `T` from an array, a single object, or a JSON string holding either. Items that do

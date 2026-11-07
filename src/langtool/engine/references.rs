@@ -9,7 +9,37 @@ use std::collections::BTreeSet;
 use tree_sitter::Node;
 
 use super::aliases::{aliases, names_for};
-use super::syntax::{Lineage, SymbolSelector, Syntax, is_test_scope, node_text, parse};
+use super::syntax::{Frame, Lineage, SymbolSelector, Syntax, is_test_scope, node_text, parse};
+
+/// How a name is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    Def,
+    Import,
+    Call,
+    Type,
+    Field,
+    Use,
+}
+
+impl Role {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Def => "def",
+            Self::Import => "import",
+            Self::Call => "call",
+            Self::Type => "type",
+            Self::Field => "field",
+            Self::Use => "use",
+        }
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
@@ -18,7 +48,7 @@ pub struct Reference {
     /// Byte offset of the identifier in the source.
     pub start_byte: usize,
     /// `def` (the name a definition introduces), `import`, `call`, `type`, `field` or `use`.
-    pub role: &'static str,
+    pub role: Role,
     /// The import alias written here instead of the symbol, when this occurrence uses one.
     pub alias: Option<String>,
     /// Whether the occurrence is inside test code (`mod tests`, a `Test*` class).
@@ -84,21 +114,21 @@ pub fn retain_qualified(refs: &mut Vec<Reference>, selector: &SymbolSelector<'_>
     let last = last.to_lowercase();
     refs.retain(|r| {
         selector.matches_scope(&r.scope)
-            || (r.role != "def" && r.text.to_lowercase().contains(&last))
+            || (r.role != Role::Def && r.text.to_lowercase().contains(&last))
     });
 }
 
 /// `line:role:text`, or `line:role(as alias):text` for a use through an import alias, one per line.
-pub fn render(refs: &[Reference]) -> String {
+pub fn render<'a>(refs: impl IntoIterator<Item = &'a Reference>) -> String {
     render_inner(refs, false)
 }
 
 /// Render each reference with its lexical scope when it has one.
-pub fn render_with_scope(refs: &[Reference]) -> String {
+pub fn render_with_scope<'a>(refs: impl IntoIterator<Item = &'a Reference>) -> String {
     render_inner(refs, true)
 }
 
-fn render_inner(refs: &[Reference], include_scope: bool) -> String {
+fn render_inner<'a>(refs: impl IntoIterator<Item = &'a Reference>, include_scope: bool) -> String {
     let mut out = String::new();
     for r in refs {
         let alias = r
@@ -167,7 +197,7 @@ fn collect(
             in_test = true;
         }
         if node.child_by_field_name("body").is_some() {
-            entered = Some(scopes.entered(def.kind, &def.name));
+            entered = Some(scopes.entered(Frame::of(&def)));
         }
     }
     let inner = entered.as_ref().unwrap_or(scopes);
@@ -210,14 +240,14 @@ fn collect(
 }
 
 /// How the identifier `node` is used.
-fn role(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> &'static str {
+pub(super) fn role(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> Role {
     if is_definition_name(node, syntax, source) {
-        return "def";
+        return Role::Def;
     }
     let mut up = node.parent();
     while let Some(parent) = up {
         if syntax.import_kinds().contains(&parent.kind()) {
-            return "import";
+            return Role::Import;
         }
         up = parent.parent();
     }
@@ -230,14 +260,14 @@ fn role(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> &'static str {
                 f.start_byte() <= node.start_byte() && node.end_byte() <= f.end_byte()
             });
         if calls_it {
-            return "call";
+            return Role::Call;
         }
         cur = parent;
     }
     match node.kind() {
-        "type_identifier" => "type",
-        "field_identifier" => "field",
-        _ => "use",
+        "type_identifier" => Role::Type,
+        "field_identifier" => Role::Field,
+        _ => Role::Use,
     }
 }
 
@@ -312,8 +342,11 @@ mod tests {
             "1:def:struct Point { x: i32 }\n2:type:fn f(p: Point) {\n3:type:let q = Point { x: 1 };\n"
         );
         let x = references(&RustSyntax, src, "x").unwrap();
-        let roles: Vec<&str> = x.iter().map(|r| r.role).collect();
-        assert_eq!(roles, ["def", "field", "field", "use", "call"]);
+        let roles: Vec<Role> = x.iter().map(|r| r.role).collect();
+        assert_eq!(
+            roles,
+            [Role::Def, Role::Field, Role::Field, Role::Use, Role::Call]
+        );
     }
 
     #[test]

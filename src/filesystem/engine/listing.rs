@@ -1,7 +1,7 @@
 //! The listing engine behind `filesystem_ls` and `filesystem_find`.
 
 use crate::common::fs::resolve::Scope;
-use crate::common::fs::walk::{Entry, Kind, WalkOpts, collect, entry_of, sort_entries};
+use crate::common::fs::walk::{Entry, Kind, SortBy, WalkOpts, collect, entry_of, sort_entries};
 use crate::common::text::{human_size, more_footer, perms};
 use crate::common::{AgentError, PageParams, Range, Result};
 
@@ -13,7 +13,7 @@ pub(crate) struct ListSpec {
     pub globs: Vec<String>,
     pub kind: Option<Kind>,
     pub size: Option<Range>,
-    pub sort_by: Option<String>,
+    pub sort_by: Option<SortBy>,
     pub reverse: bool,
     pub long: bool,
     pub dirs_first: bool,
@@ -50,12 +50,7 @@ pub(crate) fn list(scope: &Scope, spec: ListSpec) -> Result<String> {
                     && r.end.is_none_or(|m| e.size <= m)
             })
     });
-    sort_entries(
-        &mut items,
-        spec.sort_by.as_deref(),
-        spec.reverse,
-        spec.dirs_first,
-    )?;
+    sort_entries(&mut items, spec.sort_by, spec.reverse, spec.dirs_first)?;
 
     let total = items.len();
     let (offset, limit) = spec.page.window_in(spec.default_limit, total)?;

@@ -1,4 +1,5 @@
 target/*
 .AGENTS/.deleted
+.AGENTS/.known
 .AGENTS/sessions
 .AGENTS/*.md

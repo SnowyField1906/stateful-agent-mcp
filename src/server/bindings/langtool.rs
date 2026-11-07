@@ -6,7 +6,6 @@ use crate::langtool::tools::{
     ViewCallgraphParams, find_references, find_symbols, read_file, run_action, view_callgraph,
 };
 use crate::server::{State, steering};
-use crate::toolchain::Action;
 
 impl State {
     pub fn langtool_read_file(&self, p: ReadFileParams) -> Result<String> {
@@ -43,17 +42,15 @@ impl State {
 
     pub fn langtool_run_action(&self, p: RunActionParams) -> Result<String> {
         let language = p.language.clone();
-        let action = Action::parse(p.action.trim());
+        let action = p.action;
         self.with_project(|project| {
             let (out, succeeded) = run_action::run_action_with_status(project, p)?;
-            if let Some(action) = action
-                && let Some(hint) = self.validation_action_ran(
-                    &project.active.to_string(),
-                    &language,
-                    action,
-                    succeeded,
-                )
-            {
+            if let Some(hint) = self.validation_action_ran(
+                &project.active.to_string(),
+                &language,
+                action,
+                succeeded,
+            ) {
                 return Ok(format!("{out}hint: {hint}\n"));
             }
             Ok(out)

@@ -1,4 +1,5 @@
 use agent_mcp::ServerConfig;
+use agent_mcp::common::fs::walk::{Kind, SortBy};
 use agent_mcp::common::{PageParams, Range};
 use agent_mcp::filesystem::tools::LsParams;
 use agent_mcp::langtool::tools::{ReadFileEntry, ReadFileParams};
@@ -72,4 +73,25 @@ fn entries_accept_a_tail_range() {
         listing.contains("c.txt") && listing.contains("d.txt") && !listing.contains("b.txt"),
         "unexpected listing: {listing}"
     );
+}
+
+#[test]
+fn ls_accepts_strongly_typed_kind_and_sort_by() {
+    let tmp = TempProject::new("ls-typed");
+    tmp.write("b.txt", "123\n");
+    tmp.write("a.txt", "123456\n");
+    let state = State::new(ServerConfig::default());
+
+    let listing = state
+        .filesystem_ls(LsParams {
+            folder_path: Some(tmp.path_str()),
+            kind: Some(Kind::File),
+            sort_by: Some(SortBy::Size),
+            ..Default::default()
+        })
+        .unwrap();
+    // a.txt is 7 bytes, b.txt is 4 bytes. Largest first when sorted by size.
+    let pos_a = listing.find("a.txt").expect("a.txt present");
+    let pos_b = listing.find("b.txt").expect("b.txt present");
+    assert!(pos_a < pos_b, "sorted by size: {listing}");
 }

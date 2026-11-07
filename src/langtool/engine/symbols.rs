@@ -6,12 +6,14 @@
 use tree_sitter::Node;
 
 use super::name_match::ranked_names;
-use super::syntax::{Lineage, SymbolSelector, Syntax, header, parse, unit_span};
+use super::syntax::{Frame, Lineage, SymbolSelector, Syntax, header, parse, unit_span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Symbol {
     pub kind: &'static str,
     pub name: String,
+    /// For an `impl Trait for Type` block, the trait (`name` is then the type).
+    pub trait_name: Option<String>,
     /// The enclosing definitions, outermost first; shown as a qualified path (`east::Token`).
     /// Empty at the top level.
     pub scope: Lineage,
@@ -26,6 +28,19 @@ pub struct Symbol {
     pub signature: String,
     /// First line of the documentation, empty when there is none.
     pub doc: String,
+    /// Source lines below the signature row (`  N<tab>text`), set by [`attach_bodies`].
+    pub body: Option<String>,
+}
+
+impl Symbol {
+    /// The frame this definition opens for the symbols written inside it.
+    fn frame(&self) -> Frame {
+        Frame {
+            kind: self.kind,
+            name: self.name.clone(),
+            trait_name: self.trait_name.clone(),
+        }
+    }
 }
 
 /// All definitions in `source`, in source order. `None` when it cannot be parsed.
@@ -47,11 +62,22 @@ pub fn symbols(syntax: &dyn Syntax, source: &str) -> Option<Vec<Symbol>> {
 pub fn matches(symbol: &Symbol, query: Option<&str>, kind: Option<&str>) -> bool {
     query.is_none_or(|q| {
         let selector = SymbolSelector::parse(q);
-        symbol
+        let name_matches = symbol
             .name
             .to_lowercase()
             .contains(&selector.name.to_lowercase())
+            && selector.matches_scope(&symbol.scope);
+        if name_matches {
+            return true;
+        }
+        if symbol.kind == "impl"
+            && let Some(tr) = &symbol.trait_name
+            && tr.to_lowercase().contains(&selector.name.to_lowercase())
             && selector.matches_scope(&symbol.scope)
+        {
+            return true;
+        }
+        false
     }) && kind.is_none_or(|k| symbol.kind.eq_ignore_ascii_case(k))
 }
 
@@ -96,6 +122,37 @@ pub fn suggest<'a>(symbols: impl IntoIterator<Item = &'a Symbol>, query: &str) -
     .collect()
 }
 
+/// Longest definition, in lines, whose source [`attach_bodies`] inlines.
+pub const MAX_BODY_LINES: usize = 50;
+
+/// Give each listed definition its source below its row when it spans at most
+/// [`MAX_BODY_LINES`] lines and no other listed symbol lies inside it: a listed child shows its
+/// own body, so the parent would repeat it. `source` is the text `listed` was read from. Body
+/// rows start with two spaces and the source line number, so they cannot be taken for symbol
+/// rows. The definition's first line is the signature already shown, so the body starts below it.
+pub fn attach_bodies(listed: &mut [Symbol], source: &str) {
+    let lines: Vec<&str> = source.lines().collect();
+    let bodies: Vec<Option<String>> = listed
+        .iter()
+        .enumerate()
+        .map(|(at, symbol)| {
+            let holds_next = listed
+                .get(at + 1)
+                .is_some_and(|next| next.first >= symbol.first && next.last <= symbol.last);
+            if holds_next || symbol.last.saturating_sub(symbol.head) >= MAX_BODY_LINES {
+                return None;
+            }
+            let rows: String = (symbol.head + 1..=symbol.last.min(lines.len()))
+                .map(|number| format!("  {number}\t{}\n", lines[number - 1]))
+                .collect();
+            (!rows.is_empty()).then_some(rows)
+        })
+        .collect();
+    for (symbol, body) in listed.iter_mut().zip(bodies) {
+        symbol.body = body;
+    }
+}
+
 /// `lines<tab>signature`, one row per symbol. `lines` is `A..B`, or `A` for a definition on one
 /// line. A symbol whose parent definition is listed directly above it is indented two spaces
 /// under that parent. Any other symbol inside a definition ends with `(in scope)`, the qualified
@@ -125,8 +182,11 @@ pub fn render(symbols: &[Symbol], docs: bool) -> String {
             out.push_str(&format!("\t{}", s.doc));
         }
         out.push('\n');
+        if let Some(body) = &s.body {
+            out.push_str(body);
+        }
         open.push(Open {
-            path: s.scope.entered(s.kind, &s.name),
+            path: s.scope.entered(s.frame()),
             first: s.first,
             last: s.last,
             indent,
@@ -175,14 +235,16 @@ fn walk(
         out.push(Symbol {
             kind: def.kind,
             name: def.name.clone(),
+            trait_name: def.trait_name.clone(),
             scope: scope.clone(),
             first,
             last,
             head: node.start_position().row + 1,
             signature: header(node, source),
             doc: syntax.doc_line(node, source).unwrap_or_default(),
+            body: None,
         });
-        scope.push(def.kind, &def.name);
+        scope.push(Frame::of(&def));
         entered = true;
     }
     let mut cursor = node.walk();

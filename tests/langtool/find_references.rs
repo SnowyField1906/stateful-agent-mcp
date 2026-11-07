@@ -139,3 +139,146 @@ fn find_references_accepts_qualified_symbols() {
             .contains("no references to `Nothing::put`")
     );
 }
+
+#[test]
+fn find_references_takes_several_symbols_in_one_scan() {
+    let tmp = TempProject::new("code-references-batch");
+    tmp.write(
+        "src/a.rs",
+        "fn helper() {}\nfn other() { helper(); }\nfn main() { other(); helper(); }\n",
+    );
+    tmp.write("src/b.rs", "fn caller() { helper(); }\n");
+    let state = State::new(ServerConfig::default());
+    let refs = |symbols: &[&str]| {
+        state.langtool_find_references(FindReferencesParams {
+            symbol: symbols
+                .iter()
+                .map(|symbol| symbol.to_string())
+                .collect::<Vec<_>>()
+                .into(),
+            implicit_path: Some(tmp.path_str()),
+            ..Default::default()
+        })
+    };
+
+    // Each file's rows are grouped under the symbol they belong to.
+    let out = refs(&["helper", "other"]).unwrap();
+    assert!(
+        out.contains("# helper\n1:def:fn helper() {}\n2:call:fn other() { helper(); }\n3:call:"),
+        "{out}"
+    );
+    assert!(out.contains("# other\n2:def:fn other()"), "{out}");
+    assert_eq!(out.matches("# helper").count(), 2, "{out}");
+    assert_eq!(out.matches("# other").count(), 1, "{out}");
+
+    // One symbol keeps the plain output; blanks and repeats are ignored.
+    let one = refs(&["helper"]).unwrap();
+    assert!(!one.contains('#'), "{one}");
+    assert_eq!(refs(&["helper", " helper ", ""]).unwrap(), one);
+
+    // Names without references are reported, with close names when there are some.
+    let out = refs(&["other", "zzz"]).unwrap();
+    assert!(
+        out.contains("# other") && out.contains("no references to `zzz`"),
+        "{out}"
+    );
+    let out = refs(&["zzz", "yyy"]).unwrap();
+    assert!(
+        out.starts_with("no references to any of `zzz`, `yyy`"),
+        "{out}"
+    );
+    let out = refs(&["helper", "othr"]).unwrap();
+    assert!(
+        out.contains("no references to `othr`") && out.contains("similar names for `othr`: other"),
+        "{out}"
+    );
+
+    // The parameter is a string or a list of strings.
+    let one: FindReferencesParams = serde_json::from_str(r#"{"symbol": "helper"}"#).unwrap();
+    let many: FindReferencesParams =
+        serde_json::from_str(r#"{"symbol": ["helper", "other"]}"#).unwrap();
+    assert_eq!(one.symbol.cleaned(), ["helper"]);
+    assert_eq!(many.symbol.cleaned(), ["helper", "other"]);
+}
+
+#[test]
+fn find_references_from_symbol_lists_what_a_definition_uses() {
+    let tmp = TempProject::new("code-references-from");
+    tmp.write(
+        "src/store.rs",
+        "pub struct Store;\nimpl Store {\n    pub fn new() -> Store { Store }\n}\npub const LIMIT: usize = 3;\n",
+    );
+    tmp.write(
+        "src/a.rs",
+        "use crate::store::{LIMIT as MAX, Store};\nfn helper(n: usize) -> usize { n }\nfn go() -> usize {\n    let s = Store::new();\n    let total = helper(MAX);\n    missing_call(s);\n    helper(total)\n}\n",
+    );
+    let state = State::new(ServerConfig::default());
+    let from = |names: &[&str]| {
+        state.langtool_find_references(FindReferencesParams {
+            from_symbol: Some(
+                names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            implicit_path: Some(tmp.path_str()),
+            ..Default::default()
+        })
+    };
+
+    let out = from(&["go"]).unwrap();
+    assert!(out.contains("src/a.rs\n3..8\tfn go() -> usize\n"), "{out}");
+    // Calls and uses are matched to the project's definitions by name, through import aliases.
+    assert!(
+        out.contains("  call\thelper\t@5,7\tsrc/a.rs:2 fn helper\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("  use\tLIMIT (as MAX)\t@5\tsrc/store.rs:5 const LIMIT\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("  call\tnew\t@4\tsrc/store.rs:3 fn Store::new\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("  use\tStore\t@4\t") && out.contains("src/store.rs:1 struct Store"),
+        "{out}"
+    );
+    // A call that nothing defines is external; locals are not listed at all.
+    assert!(out.contains("  external\tmissing_call\n"), "{out}");
+    assert!(
+        !out.contains("\ttotal\t") && !out.contains("\ts\t"),
+        "{out}"
+    );
+
+    // A struct uses the types of its fields, and several names share one scan.
+    let out = from(&["Store", "helper"]).unwrap();
+    assert!(out.contains("fn helper(n: usize) -> usize"), "{out}");
+
+    let out = from(&["zzz"]).unwrap();
+    assert!(out.starts_with("no definition `zzz`"), "{out}");
+    let out = from(&["helpr"]).unwrap();
+    assert!(
+        out.starts_with("no definition") && out.contains("similar symbol names: helper"),
+        "{out}"
+    );
+    let out = from(&["go", "zzz"]).unwrap();
+    assert!(
+        out.contains("fn go()") && out.contains("no definition `zzz`"),
+        "{out}"
+    );
+
+    let err = state
+        .langtool_find_references(FindReferencesParams {
+            symbol: "go".into(),
+            from_symbol: Some("go".into()),
+            implicit_path: Some(tmp.path_str()),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(err.to_string().contains("not both"), "{err}");
+    let only: FindReferencesParams = serde_json::from_str(r#"{"from_symbol": "go"}"#).unwrap();
+    assert_eq!(only.from_symbol.unwrap().cleaned(), ["go"]);
+}

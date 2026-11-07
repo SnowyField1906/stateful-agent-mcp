@@ -5,7 +5,8 @@
 //! operation succeeded. For the active turn the project keeps `active_baseline` (the content of
 //! each touched file before the turn first touched it) and `active_moves` (`to_path -> from_path`).
 //! After every batch the turn's `updates` are recomputed as the net difference between that
-//! baseline and the files on disk, and `.AGENTS/.deleted/` is synced with any net-deleted files.
+//! baseline and the files on disk, `.AGENTS/.deleted/` is synced with any net-deleted files, and
+//! `.AGENTS/.known/` takes the content of every touched file (see `external`).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -143,7 +144,7 @@ impl Project {
     }
 
     /// Recompute the active turn's net `updates` from `active_baseline` and the files on disk,
-    /// sync `.AGENTS/.deleted/`, and save the session.
+    /// sync `.AGENTS/.deleted/`, save the session, and remember the files in `.AGENTS/.known/`.
     fn refresh_active_updates(&mut self) -> Result<()> {
         let key = self.active;
         let mut current = Tree::new();
@@ -168,7 +169,8 @@ impl Project {
         }
 
         self.active_turn_mut()?.updates = updates;
-        self.save_session(key.session)
+        self.save_session(key.session)?;
+        self.record_known(&current)
     }
 
     fn apply_op(

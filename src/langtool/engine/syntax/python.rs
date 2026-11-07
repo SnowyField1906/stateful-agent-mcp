@@ -61,6 +61,18 @@ impl Syntax for PythonSyntax {
                 return Some(Definition {
                     kind: "var",
                     name: node_text(left, source).to_string(),
+                    trait_name: None,
+                });
+            }
+            "assignment" if is_class_level(node) => {
+                let left = node.child_by_field_name("left")?;
+                if left.kind() != "identifier" {
+                    return None;
+                }
+                return Some(Definition {
+                    kind: "field",
+                    name: node_text(left, source).to_string(),
+                    trait_name: None,
                 });
             }
             _ => return None,
@@ -69,6 +81,7 @@ impl Syntax for PythonSyntax {
         Some(Definition {
             kind,
             name: node_text(name, source).to_string(),
+            trait_name: None,
         })
     }
 
@@ -107,12 +120,33 @@ impl Syntax for PythonSyntax {
             }),
             "attribute" => {
                 let name = node_text(target.child_by_field_name("attribute")?, source).to_string();
-                let own = target
-                    .child_by_field_name("object")
-                    .is_some_and(|o| matches!(node_text(o, source), "self" | "cls"));
+                let object = target.child_by_field_name("object")?;
+                let obj_text = node_text(object, source);
+                if matches!(obj_text, "self" | "cls") {
+                    return Some(CallSite {
+                        name,
+                        kind: CallKind::Own,
+                    });
+                }
+                if object.kind() == "identifier" {
+                    if obj_text.starts_with(char::is_uppercase)
+                        || is_imported_module(object, obj_text, source)
+                    {
+                        return Some(CallSite {
+                            name,
+                            kind: CallKind::Path(obj_text.to_string()),
+                        });
+                    }
+                    if let Some(type_name) = parameter_annotation(object, obj_text, source) {
+                        return Some(CallSite {
+                            name,
+                            kind: CallKind::MethodOf(type_name),
+                        });
+                    }
+                }
                 Some(CallSite {
                     name,
-                    kind: if own { CallKind::Own } else { CallKind::Any },
+                    kind: CallKind::Method,
                 })
             }
             _ => None,
@@ -121,6 +155,10 @@ impl Syntax for PythonSyntax {
 
     fn kinds(&self) -> &'static [&'static str] {
         &["def", "class", "var"]
+    }
+
+    fn extra_kinds(&self) -> &'static [&'static str] {
+        &["field"]
     }
 
     fn import_kinds(&self) -> &'static [&'static str] {
@@ -166,6 +204,64 @@ fn is_module_level(node: Node<'_>) -> bool {
         .filter(|p| p.kind() == "expression_statement")
         .and_then(|p| p.parent())
         .is_some_and(|g| g.kind() == "module")
+}
+
+/// Whether an assignment is a statement directly in a class body.
+fn is_class_level(node: Node<'_>) -> bool {
+    node.parent()
+        .filter(|p| p.kind() == "expression_statement")
+        .and_then(|p| p.parent())
+        .filter(|b| b.kind() == "block")
+        .and_then(|b| b.parent())
+        .is_some_and(|c| c.kind() == "class_definition")
+}
+
+fn is_imported_module(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        current = parent;
+    }
+    let mut cursor = current.walk();
+    for stmt in current.named_children(&mut cursor) {
+        if stmt.kind() == "import_statement" {
+            let mut c = stmt.walk();
+            for dotted in stmt.named_children(&mut c) {
+                if dotted.kind() == "dotted_name" && node_text(dotted, source) == name {
+                    return true;
+                }
+                if dotted.kind() == "aliased_import"
+                    && dotted
+                        .child_by_field_name("alias")
+                        .is_some_and(|a| node_text(a, source) == name)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn parameter_annotation(node: Node<'_>, param_name: &str, source: &str) -> Option<String> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "function_definition" {
+            let params = parent.child_by_field_name("parameters")?;
+            let mut cursor = params.walk();
+            for param in params.named_children(&mut cursor) {
+                if matches!(param.kind(), "typed_parameter" | "typed_default_parameter") {
+                    let name_node = param.child_by_field_name("name")?;
+                    if node_text(name_node, source) == param_name {
+                        let ty_node = param.child_by_field_name("type")?;
+                        return Some(node_text(ty_node, source).to_string());
+                    }
+                }
+            }
+            return None;
+        }
+        current = parent;
+    }
+    None
 }
 
 #[cfg(test)]

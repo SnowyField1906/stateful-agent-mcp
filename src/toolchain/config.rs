@@ -15,6 +15,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::common::{AgentError, Result};
@@ -26,7 +28,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const ARGS_PLACEHOLDER: &str = "{args}";
 
 /// A project command the agent may run. Declaration order is the order shown to the agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Action {
     Lint,
     Build,
@@ -55,7 +58,38 @@ impl Action {
     }
 
     pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|a| a.name() == name)
+        match name.trim().to_ascii_lowercase().as_str() {
+            "lint" => Some(Action::Lint),
+            "build" => Some(Action::Build),
+            "test" => Some(Action::Test),
+            "install" => Some(Action::Install),
+            "remove" => Some(Action::Remove),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Action {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Action::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom("expected lint, build, test, install or remove")
+        })
+    }
+}
+
+impl From<&str> for Action {
+    fn from(s: &str) -> Self {
+        Action::parse(s).unwrap_or_else(|| panic!("invalid action: {s}"))
+    }
+}
+
+impl From<String> for Action {
+    fn from(s: String) -> Self {
+        Action::from(s.as_str())
     }
 }
 

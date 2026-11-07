@@ -8,5 +8,5 @@ pub mod ls;
 
 pub use file_metadata::FileMetadataParams;
 pub use find::FindParams;
-pub use grep::GrepParams;
+pub use grep::{GrepOutputMode, GrepParams};
 pub use ls::LsParams;

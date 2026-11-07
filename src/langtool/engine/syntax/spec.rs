@@ -15,6 +15,8 @@ pub struct Definition {
     /// Short kind shown in listings, such as `fn`, `struct` or `class`.
     pub kind: &'static str,
     pub name: String,
+    /// For an `impl Trait for Type` block, the trait (`name` is then the type).
+    pub trait_name: Option<String>,
 }
 
 /// A symbol written as a name with optional qualifiers: `put`, `Store::put`, `Store.put` or
@@ -54,10 +56,18 @@ impl<'a> SymbolSelector<'a> {
     pub fn matches_scope(&self, scope: &Lineage) -> bool {
         let mut wanted = self.qualifiers.iter();
         let mut next = wanted.next();
-        for frame in scope.names() {
+        for frame in scope.frames() {
             let Some(target) = next else { break };
-            let clean = frame.split('<').next().unwrap_or(frame).trim();
-            if clean.eq_ignore_ascii_case(target) {
+            let clean = frame.name.split('<').next().unwrap_or(&frame.name).trim();
+            let matches_name = clean.eq_ignore_ascii_case(target);
+            let matches_trait = frame.trait_name.as_deref().is_some_and(|t| {
+                t.split('<')
+                    .next()
+                    .unwrap_or(t)
+                    .trim()
+                    .eq_ignore_ascii_case(target)
+            });
+            if matches_name || matches_trait {
                 next = wanted.next();
             }
         }
@@ -101,6 +111,9 @@ pub enum CallKind {
     Own,
     /// A method on a receiver whose type the language adapter inferred.
     MethodOf(String),
+    /// A method on a receiver typed as a trait object or `impl Trait`: the trait's declaration
+    /// and every implementation of it.
+    Dyn(String),
     /// `Type::foo()` or `module::foo()`: the last segment before the name.
     Path(String),
     /// `value.foo()` where the type of `value` is unknown: possible method targets.

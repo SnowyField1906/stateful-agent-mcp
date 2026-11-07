@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::common::fs::resolve::Scope;
-use crate::common::fs::walk::Kind;
+use crate::common::fs::walk::{Kind, SortBy};
 use crate::common::params::{PageParams, opt_string_or_vec};
 use crate::common::range::{Range, opt_range};
 use crate::common::{Result, ServerConfig};
@@ -24,7 +24,7 @@ pub struct FindParams {
     pub glob: Option<Vec<String>>,
     /// `file` (default), `dir` or `symlink`.
     #[serde(default)]
-    pub kind: Option<String>,
+    pub kind: Option<Kind>,
     /// File size in bytes, for example `100..1024` or `1024..`.
     #[serde(default, deserialize_with = "opt_range")]
     #[schemars(with = "Option<String>")]
@@ -34,7 +34,7 @@ pub struct FindParams {
     pub show_gitignored: Option<bool>,
     /// `name` (default), `size` (largest first), `modified` (newest first) or `extension`.
     #[serde(default)]
-    pub sort_by: Option<String>,
+    pub sort_by: Option<SortBy>,
     #[serde(default)]
     pub reverse: Option<bool>,
     #[serde(flatten)]
@@ -47,10 +47,7 @@ pub fn find(project: Option<&Project>, cfg: &ServerConfig, p: FindParams) -> Res
         p.folder_path.as_deref(),
         "folder_path",
     )?;
-    let kind = match p.kind.as_deref() {
-        Some(raw) => Kind::parse(raw)?,
-        None => Kind::File,
-    };
+    let kind = p.kind.unwrap_or(Kind::File);
     list(
         &scope,
         ListSpec {

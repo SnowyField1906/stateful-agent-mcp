@@ -6,6 +6,8 @@
 //! - `sessions/{SS}.md` — turns, notes, net file updates, handover tasks
 //! - `.deleted/{SS.TT}/{path}` — pre-turn content of files deleted in turn `SS.TT`. Any past
 //!   state is rebuilt from current disk files, turn updates, and `.deleted/`.
+//! - `.known/{path}` — the content the ledger last saw of each file it has touched, to notice
+//!   edits made outside it (see `external`)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -27,6 +29,7 @@ pub struct Project {
     pub(crate) agents_dir: PathBuf,
     pub(crate) sessions_dir: PathBuf,
     pub(crate) deleted_dir: PathBuf,
+    pub(crate) known_dir: PathBuf,
     pub(crate) sessions: BTreeMap<u32, Vec<TurnRecord>>,
     pub(crate) deleted: BTreeMap<TurnKey, DeletedMap>,
     /// Pre-turn baseline of files touched so far in the active turn.
@@ -61,6 +64,7 @@ impl Project {
         let agents_dir = root.join(".AGENTS");
         let sessions_dir = agents_dir.join("sessions");
         let deleted_dir = agents_dir.join(".deleted");
+        let known_dir = agents_dir.join(".known");
         for dir in [&sessions_dir, &deleted_dir] {
             std::fs::create_dir_all(dir).map_err(|e| AgentError::io_at(dir, e))?;
         }
@@ -93,6 +97,7 @@ impl Project {
             agents_dir,
             sessions_dir,
             deleted_dir,
+            known_dir,
             sessions,
             deleted,
             active_baseline: Tree::new(),
@@ -261,7 +266,15 @@ impl Project {
 
         let mut text = match terminal_text {
             Some(found) => found,
-            None => read_text_opt(&self.root, &cur_path)?,
+            None => {
+                if !self.active_baseline.contains_key(&cur_path)
+                    && let Some(known) = store::read_known(&self.known_dir, &cur_path)?
+                {
+                    Some(known)
+                } else {
+                    read_text_opt(&self.root, &cur_path)?
+                }
+            }
         };
 
         for (patched_path, hunks) in patches_to_undo.iter().rev() {

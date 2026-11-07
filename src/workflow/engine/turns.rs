@@ -127,6 +127,8 @@ impl Project {
                 }
             }
         }
+        // The file holds again what the ledger last saw of it.
+        let _ = store::write_known(&self.known_dir, rel, content);
     }
 
     /// Remove the active turn and make `previous` active again.
@@ -220,6 +222,17 @@ mod tests {
         assert!(!project.deleted.contains_key(&key));
         assert!(!dir.join(".AGENTS/.deleted").join(key.to_string()).exists());
         assert!(project.active_baseline.is_empty());
+        // The copies of what the ledger last saw follow the rollback.
+        let known = dir.join(".AGENTS/.known");
+        assert_eq!(
+            std::fs::read_to_string(known.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(known.join("b.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(!known.join("sub").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

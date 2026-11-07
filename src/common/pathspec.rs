@@ -17,9 +17,25 @@ pub fn normalize_rel(raw: &str, root: &Path) -> Result<String> {
         return Err(AgentError::invalid(raw, "path is empty"));
     }
     let path = Path::new(trimmed);
-    let relative = if path.is_absolute() {
-        path.strip_prefix(root)
-            .map_err(|_| AgentError::invalid(raw, "path is outside the project root"))?
+    let relative_buf: std::path::PathBuf;
+    let relative: &Path = if path.is_absolute() {
+        match path.strip_prefix(root) {
+            Ok(rel) => rel,
+            Err(_) => {
+                if let (Ok(real_path), Ok(real_root)) =
+                    (std::fs::canonicalize(path), std::fs::canonicalize(root))
+                {
+                    if let Ok(rel) = real_path.strip_prefix(&real_root) {
+                        relative_buf = rel.to_path_buf();
+                        &relative_buf
+                    } else {
+                        return Err(AgentError::invalid(raw, "path is outside the project root"));
+                    }
+                } else {
+                    return Err(AgentError::invalid(raw, "path is outside the project root"));
+                }
+            }
+        }
     } else {
         path
     };

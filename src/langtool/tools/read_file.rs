@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::common::fs::resolve::{Scope, Target};
-use crate::common::params::flex_u64;
+use crate::common::params::{Names, flex_u64};
 use crate::common::range::opt_range;
 use crate::common::text::clip;
 use crate::common::{AgentError, Range, Result};
@@ -51,7 +51,8 @@ pub struct ReadFileEntry {
     /// Read only definitions with this name in a file with a registered Tree-sitter grammar, with their doc comments and
     /// attributes: `name`, `Type::name`, `Class.name` or `mod/Type/name`. Works with `fold_level`, not with `lines`.
     #[serde(default)]
-    pub symbol: Option<String>,
+    #[schemars(with = "Option<Vec<String>>")]
+    pub symbol: Option<Names>,
 }
 
 impl ReadFileEntry {
@@ -185,19 +186,19 @@ fn read_one(
     if lines.is_empty() {
         return Ok((format!("{} (empty)\n", target.shown()), None));
     }
-    let symbol = req
+    let symbols = req
         .symbol
-        .as_deref()
-        .map(str::trim)
+        .as_ref()
+        .map(Names::cleaned)
         .filter(|s| !s.is_empty());
-    if symbol.is_some() && req.lines.is_some() {
+    if symbols.is_some() && req.lines.is_some() {
         return Err(AgentError::invalid(
             "symbol",
             "cannot be combined with `lines`; the symbol selects the lines",
         ));
     }
     let view = View::new(target.shown(), &text, &lines, at, req);
-    let unfocused = (symbol.is_none()
+    let unfocused = (symbols.is_none()
         && req.lines.is_none()
         && req.fold_level.is_none()
         && at.is_none()
@@ -207,8 +208,8 @@ fn read_one(
         path: view.path.to_string(),
         lines: lines.len(),
     });
-    let out = match symbol {
-        Some(name) => read_symbol(&view, name)?,
+    let out = match symbols {
+        Some(names) => read_symbols(&view, &names)?,
         None => view.render(&window(req.lines, lines.len(), view.path)?, None),
     };
     Ok((out, unfocused))
@@ -359,45 +360,63 @@ impl<'a> View<'a> {
     }
 }
 
-/// The definitions named `name` (`name`, `Type::name`, `Class.name`) with their doc comments,
-/// attributes and decorators.
-fn read_symbol(view: &View<'_>, name: &str) -> Result<String> {
+/// The definitions named in `names` (`name`, `Type::name`, `Class.name`) with their doc comments,
+/// attributes and decorators, rendered in source order.
+fn read_symbols(view: &View<'_>, names: &[&str]) -> Result<String> {
     let syntax = registry::for_path(view.path)
         .ok_or_else(|| AgentError::invalid("symbol", unsupported_message()))?;
     let all = symbols::symbols(syntax, view.text)
         .ok_or_else(|| AgentError::invalid("file_path", "could not be parsed"))?;
-    let selector = SymbolSelector::parse(name);
-    let base = selector.name;
-    let hits: Vec<&Symbol> = all
-        .iter()
-        .filter(|s| s.name == base && selector.matches_scope(&s.scope))
-        .collect();
-    if hits.is_empty() {
-        return Err(AgentError::NotFound(no_symbol(
-            &all, view.path, name, &selector,
-        )));
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out_blocks = Vec::new();
+    for &name in names {
+        let selector = SymbolSelector::parse(name);
+        let base = selector.name;
+        let hits: Vec<&Symbol> = all
+            .iter()
+            .filter(|s| s.name == base && selector.matches_scope(&s.scope))
+            .collect();
+        if hits.is_empty() {
+            return Err(AgentError::NotFound(no_symbol(
+                &all, view.path, name, &selector,
+            )));
+        }
+        for hit in hits.iter().take(MAX_SYMBOL_HITS) {
+            if !seen.insert((hit.first, hit.last)) {
+                continue;
+            }
+            let w = Window {
+                start: hit.first - 1,
+                end: hit.last,
+                cap: MAX_LINES,
+            };
+            let scope = if hit.scope.is_empty() {
+                String::new()
+            } else {
+                format!(" (in {})", hit.scope)
+            };
+            out_blocks.push((
+                hit.first,
+                view.render(&w, Some(&format!("{} {}{scope}", hit.kind, hit.name))),
+            ));
+        }
+        if hits.len() > MAX_SYMBOL_HITS {
+            out_blocks.push((
+                usize::MAX,
+                format!(
+                    "[{} more definitions named `{base}`; qualify the name as `Type::{base}`]\n",
+                    hits.len() - MAX_SYMBOL_HITS
+                ),
+            ));
+        }
     }
-    let mut blocks = Vec::new();
-    for hit in hits.iter().take(MAX_SYMBOL_HITS) {
-        let w = Window {
-            start: hit.first - 1,
-            end: hit.last,
-            cap: MAX_LINES,
-        };
-        let scope = if hit.scope.is_empty() {
-            String::new()
-        } else {
-            format!(" (in {})", hit.scope)
-        };
-        blocks.push(view.render(&w, Some(&format!("{} {}{scope}", hit.kind, hit.name))));
-    }
-    let mut out = blocks.join("\n");
-    if hits.len() > MAX_SYMBOL_HITS {
-        out.push_str(&format!(
-            "[{} more definitions named `{base}`; qualify the name as `Type::{base}`]\n",
-            hits.len() - MAX_SYMBOL_HITS
-        ));
-    }
+    out_blocks.sort_by_key(|(first, _)| *first);
+    let out = out_blocks
+        .into_iter()
+        .map(|(_, block)| block)
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(out)
 }
 

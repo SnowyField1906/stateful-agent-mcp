@@ -17,7 +17,7 @@ pub fn gateway_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": CALL_TOOL,
-            "description": "Call any tool on the live MCP worker by name, including tools added or schema-updated after the client session started.",
+            "description": "Call any tool on the latest built `agent-mcp` by name; after building `agent-mcp` with `--release` tag, the `proxy-agent-mcp` automatically hot-reload tools added or schema-updated in `agent-mcp`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -35,7 +35,7 @@ pub fn gateway_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": LIST_TOOLS,
-            "description": "List tools currently live on the MCP worker (reloads first if the binary changed on disk). Use `diff_only: true` to see only tools added or modified since session startup, or `full_schema: true` for raw JSON schemas.",
+            "description": "List tools on the latest built `agent-mcp`. Use `diff_only: true` to see only tools added or modified (between the outdated `agent-mcp` and rebuilt `agent-mcp`), or `full_schema: true` for raw JSON schemas.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -45,7 +45,7 @@ pub fn gateway_tool_definitions() -> Vec<Value> {
                     },
                     "diff_only": {
                         "type": "boolean",
-                        "description": "Show only tools added or modified since the client session started."
+                        "description": "Show only tools added or modified towards outdated `agent-mcp`."
                     },
                     "full_schema": {
                         "type": "boolean",
@@ -56,7 +56,7 @@ pub fn gateway_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": RELOAD_TOOL,
-            "description": "Check if the MCP server binary on disk was rebuilt (or force a restart with `force: true`), hot-reload the worker process, replay project registration, and report any tool schema changes.",
+            "description": "Check if `agent-mcp` was rebuilt and hot-reload the worker process (or force a restart with `force: true`), and report any tool schema changes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -13,7 +13,7 @@ use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, WalkOpts, read_searchable, walk};
@@ -44,7 +44,7 @@ pub struct GrepParams {
     pub context_lines: Option<u64>,
     /// `content` (default), `files` (matching paths only) or `count` (matches per file).
     #[serde(default)]
-    pub output: Option<String>,
+    pub output: Option<GrepOutputMode>,
     /// Include dotfiles and gitignored files.
     #[serde(default)]
     pub show_gitignored: Option<bool>,
@@ -54,11 +54,49 @@ pub struct GrepParams {
 
 const LINE_CLIP: usize = 300;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GrepOutputMode {
+    #[default]
     Content,
     Files,
     Count,
+}
+
+impl GrepOutputMode {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "content" => Ok(Self::Content),
+            "files" => Ok(Self::Files),
+            "count" => Ok(Self::Count),
+            other => Err(AgentError::invalid(
+                "output",
+                format!("`{other}`; expected content, files or count"),
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GrepOutputMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        GrepOutputMode::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for GrepOutputMode {
+    fn from(s: &str) -> Self {
+        GrepOutputMode::parse(s).unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+impl From<String> for GrepOutputMode {
+    fn from(s: String) -> Self {
+        GrepOutputMode::from(s.as_str())
+    }
 }
 
 pub fn grep(project: Option<&Project>, cfg: &ServerConfig, p: GrepParams) -> Result<String> {
@@ -81,17 +119,7 @@ pub fn grep(project: Option<&Project>, cfg: &ServerConfig, p: GrepParams) -> Res
         .size_limit(8 << 20)
         .build()
         .map_err(|e| AgentError::invalid("query", e.to_string()))?;
-    let mode = match p.output.as_deref().map(str::trim) {
-        None | Some("" | "content") => Mode::Content,
-        Some("files") => Mode::Files,
-        Some("count") => Mode::Count,
-        Some(other) => {
-            return Err(AgentError::invalid(
-                "output",
-                format!("`{other}`; expected content, files or count"),
-            ));
-        }
-    };
+    let mode = p.output.unwrap_or_default();
 
     let globs = p.glob.clone().unwrap_or_default();
     let show_gitignored = p.show_gitignored.unwrap_or(false);
@@ -136,7 +164,7 @@ pub fn grep(project: Option<&Project>, cfg: &ServerConfig, p: GrepParams) -> Res
         None => p.page.window(cfg.default_limit)?,
         Some(n) => {
             let counted = run(usize::MAX, 1)?;
-            let total = if mode == Mode::Content {
+            let total = if mode == GrepOutputMode::Content {
                 counted.matches_seen
             } else {
                 counted.files_seen
@@ -168,7 +196,7 @@ pub fn grep(project: Option<&Project>, cfg: &ServerConfig, p: GrepParams) -> Res
 
 struct Search {
     re: Regex,
-    mode: Mode,
+    mode: GrepOutputMode,
     ctx: usize,
     offset: usize,
     limit: usize,
@@ -199,13 +227,13 @@ impl Search {
         }
 
         match self.mode {
-            Mode::Files | Mode::Count => {
+            GrepOutputMode::Files | GrepOutputMode::Count => {
                 if self.files_seen >= self.offset {
                     if self.emitted >= self.limit {
                         self.more = true;
                         return false;
                     }
-                    if self.mode == Mode::Count {
+                    if self.mode == GrepOutputMode::Count {
                         self.out.push_str(&format!("{rel}:{}\n", hits.len()));
                     } else {
                         self.out.push_str(rel);
@@ -216,7 +244,7 @@ impl Search {
                 self.files_seen += 1;
                 true
             }
-            Mode::Content => {
+            GrepOutputMode::Content => {
                 let mut picked = Vec::new();
                 for &hit in &hits {
                     if self.matches_seen >= self.offset {

@@ -222,3 +222,29 @@ fn read_file_folds_deep_blocks_with_fold_level_and_pages_by_source_line() {
         "unexpected output: {text}"
     );
 }
+
+#[test]
+fn read_file_symbol_batch_renders_in_source_order() {
+    let dir = TempProject::new("read-batch-symbols");
+    dir.write(
+        "src/lib.rs",
+        "fn first() -> i32 { 1 }\nfn second() -> i32 { 2 }\nfn third() -> i32 { 3 }\n",
+    );
+    let state = State::new(ServerConfig::default());
+    // Give symbols in reverse order: ["third", "first"]
+    let out = state
+        .langtool_read_file(ReadFileParams {
+            files: vec![ReadFileEntry {
+                file_path: dir.root.join("src/lib.rs").to_string_lossy().into_owned(),
+                symbol: Some(vec!["third".to_string(), "first".to_string()].into()),
+                ..ReadFileEntry::default()
+            }],
+            at_implicit_id: None,
+        })
+        .unwrap();
+
+    let pos_first = out.find("fn first() -> i32 { 1 }").expect("first present");
+    let pos_third = out.find("fn third() -> i32 { 3 }").expect("third present");
+    assert!(pos_first < pos_third, "rendered in source order: {out}");
+    assert!(!out.contains("fn second()"), "second not included: {out}");
+}

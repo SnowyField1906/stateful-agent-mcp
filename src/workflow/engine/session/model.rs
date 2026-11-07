@@ -103,6 +103,9 @@ impl TitleChange {
     }
 }
 
+/// Title of the turn that records edits made to tracked files outside the ledger.
+pub const EXTERNAL_EDIT_TITLE: &str = "[External disk edit]";
+
 #[derive(Clone, Debug)]
 pub struct TurnRecord {
     pub key: TurnKey,
@@ -135,6 +138,14 @@ impl TurnRecord {
     /// no item of it can be referenced by ID.
     pub fn is_file_edits_only(&self) -> bool {
         self.title.is_none() && self.notes.is_empty() && self.tasks.is_empty()
+    }
+
+    /// True for a turn the ledger opened by itself to record edits made to tracked files outside
+    /// it. It holds no notes or tasks, so a handover is never read from it.
+    pub fn is_external_edit(&self) -> bool {
+        self.title.as_deref() == Some(EXTERNAL_EDIT_TITLE)
+            && self.notes.is_empty()
+            && self.tasks.is_empty()
     }
 
     /// Apply the `title` argument of a `write_*` call. An untitled turn takes it as a single line;

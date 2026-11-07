@@ -11,7 +11,7 @@ use crate::workflow::engine::ops::summary::op_summary;
 use crate::workflow::engine::project::seed_guide;
 use crate::workflow::engine::session::model::{HandoverTaskDto, TurnKey, TurnRecord};
 
-pub const DESCRIPTION: &str = "Open a project (`folder_path`, absolute) and start or resume its session. Call this first. Returns the active turn ID, the usage guide, the project's own instructions, `language_capabilities` (the actions `langtool_run_action` accepts) and the previous turn's notes, handover tasks and file updates.";
+pub const DESCRIPTION: &str = "Open a project (`folder_path`, absolute) and start or resume its session. Call this first. Returns the active turn ID, the usage guide, the project's own instructions, `language_capabilities` (the actions `langtool_run_action` accepts) and the previous turn's notes, handover tasks and file updates. Files that changed on disk outside the ledger are recorded in a turn of their own and listed under `external_edits`.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RegisterParams {
@@ -29,13 +29,17 @@ pub struct RegisterParams {
 const SESSIONS_SHOWN: usize = 10;
 
 pub fn register(cfg: &ServerConfig, p: RegisterParams) -> Result<(Project, Value)> {
-    let project = Project::open(&p.folder_path)?;
+    let mut project = Project::open(&p.folder_path)?;
+    let external = project.sync_external_edits()?;
     let show_instructions = p.show_instructions.unwrap_or(true);
     let show_last_turn = p.show_last_turn_info.unwrap_or(true);
 
     let mut out = Map::new();
     out.insert("project_root".into(), json!(project.root.to_string_lossy()));
     out.insert("active_turn_id".into(), json!(project.active.to_string()));
+    if let Some(external) = &external {
+        out.insert("external_edits".into(), external.report());
+    }
     match project.language_config() {
         Ok(lang) => {
             if let Some(caps) = lang.capabilities_json() {
@@ -90,7 +94,7 @@ fn last_closed_turn(project: &Project) -> Option<&TurnRecord> {
         .rev()
         .filter(|k| *k != project.active)
         .filter_map(|k| project.turn(k))
-        .find(|t| !t.is_empty())
+        .find(|t| !t.is_empty() && !t.is_external_edit())
 }
 
 /// Turns searched backwards for notes when the last turn recorded none.
@@ -104,8 +108,9 @@ fn latest_notes_before(project: &Project, before_key: TurnKey) -> Option<&TurnRe
         .into_iter()
         .rev()
         .filter(|k| *k < before_key)
-        .take(NOTE_FALLBACK_TURNS)
         .filter_map(|k| project.turn(k))
+        .filter(|t| !t.is_external_edit())
+        .take(NOTE_FALLBACK_TURNS)
         .find(|t| !t.notes.is_empty())
 }
 
@@ -114,14 +119,18 @@ fn latest_tasks_before(
     project: &Project,
     before_key: TurnKey,
 ) -> Option<(TurnKey, Vec<HandoverTaskDto>)> {
-    project
+    let candidate = project
         .flat_keys()
         .into_iter()
         .rev()
         .filter(|k| *k < before_key)
         .filter_map(|k| project.turn(k))
-        .find(|t| !t.tasks.is_empty())
-        .map(|t| (t.key, t.task_dtos()))
+        .find(|t| !t.is_external_edit())?;
+    if !candidate.tasks.is_empty() {
+        Some((candidate.key, candidate.task_dtos()))
+    } else {
+        None
+    }
 }
 
 fn session_summaries(project: &Project) -> Vec<String> {

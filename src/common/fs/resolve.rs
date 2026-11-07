@@ -104,8 +104,9 @@ pub fn resolve(root: &Path, raw: Option<&str>) -> Result<Target> {
     }
     let rel = normalize_rel(raw, root)?;
     let abs = root.join(&rel);
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     if let Ok(real) = std::fs::canonicalize(&abs)
-        && !real.starts_with(root)
+        && !real.starts_with(&real_root)
     {
         return Err(AgentError::invalid(
             raw,

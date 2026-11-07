@@ -151,6 +151,29 @@ fn find_symbols_filters_by_enclosing_scope() {
 }
 
 #[test]
+fn find_symbols_nests_methods_under_a_trait_impl_and_the_trait() {
+    let dir = TempProject::new("trait-impl-nesting");
+    dir.write(
+        "src/lib.rs",
+        "struct Dot;\ntrait Draw {\n    fn draw(&self);\n}\nimpl Draw for Dot {\n    fn draw(&self) {}\n}\n",
+    );
+    let state = State::new(ServerConfig::default());
+    let out = state
+        .langtool_find_symbols(FindSymbolsParams {
+            implicit_path: Some(dir.path_str()),
+            ..FindSymbolsParams::default()
+        })
+        .unwrap();
+
+    assert!(out.contains("5..7\timpl Draw for Dot"), "{out}");
+    assert_eq!(out.matches("\t  fn draw(&self)").count(), 2, "{out}");
+    assert!(
+        !out.contains("(in Dot)") && !out.contains("(in Draw)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn find_symbols_accepts_qualified_queries_in_every_separator_style() {
     let dir = TempProject::new("symbol-qualified-query");
     dir.write(
@@ -306,5 +329,93 @@ fn symbols_list_variants_and_fields_only_when_asked_and_show_docs() {
     assert!(
         out.contains("\tA shape.") && out.contains("\tMake one."),
         "{out}"
+    );
+}
+
+#[test]
+fn find_symbols_takes_several_queries_and_inlines_short_bodies() {
+    let tmp = TempProject::new("code-symbols-batch");
+    let long = "    let a = 1;\n".repeat(60);
+    tmp.write(
+        "src/a.rs",
+        &format!(
+            "struct P {{\n    x: i32,\n}}\nimpl P {{\n    fn new() -> Self {{\n        P {{ x: 0 }}\n    }}\n    fn get(&self) -> i32 {{ self.x }}\n}}\nfn long() {{\n{long}}}\n"
+        ),
+    );
+    let state = State::new(ServerConfig::default());
+    let list = |queries: &[&str], body: bool| {
+        state.langtool_find_symbols(FindSymbolsParams {
+            implicit_path: Some(tmp.path_str()),
+            query: Some(
+                queries
+                    .iter()
+                    .map(|query| query.to_string())
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            include_body: Some(body),
+            ..Default::default()
+        })
+    };
+
+    // Several queries list the union of their matches, and bodies only on request.
+    let out = list(&["get", "long"], false).unwrap();
+    assert!(
+        out.contains("fn get") && out.contains("fn long") && !out.contains("fn new"),
+        "{out}"
+    );
+    assert!(!out.contains("\n  6\t"), "no bodies unless asked: {out}");
+
+    // A short definition shows the lines below its signature; a one-line one has nothing to
+    // add, and one over 50 lines stays a row.
+    let out = list(&["new", "get", "long"], true).unwrap();
+    assert!(
+        out.contains("\n  6\t        P { x: 0 }\n  7\t    }\n"),
+        "{out}"
+    );
+    assert!(!out.contains("\n  8\t"), "{out}");
+    assert!(
+        out.contains("fn long") && !out.contains("\n  11\t"),
+        "{out}"
+    );
+
+    // A definition that holds another listed definition does not repeat its body.
+    let out = list(&["P", "new"], true).unwrap();
+    assert!(out.contains("\n  2\t    x: i32,\n  3\t}\n"), "{out}");
+    assert_eq!(out.matches("P { x: 0 }").count(), 1, "{out}");
+    assert!(!out.contains("\n  8\t"), "{out}");
+
+    // Each query that matches nothing is named.
+    let out = list(&["new", "zzzz"], false).unwrap();
+    assert!(
+        out.contains("fn new") && out.contains("no symbols for `zzzz`"),
+        "{out}"
+    );
+    let out = list(&["zzzz"], false).unwrap();
+    assert!(out.starts_with("no symbols\n"), "{out}");
+}
+
+#[test]
+fn find_symbols_matches_trait_implementation_by_trait_name() {
+    let tmp = TempProject::new("trait-impl-symbols");
+    tmp.write(
+        "src/lib.rs",
+        concat!(
+            "trait Draw {\n    fn draw(&self);\n}\n",
+            "struct Dot;\n",
+            "impl Draw for Dot {\n    fn draw(&self) {}\n}\n",
+        ),
+    );
+    let state = tmp.open(ServerConfig::default());
+    let out = state
+        .langtool_find_symbols(FindSymbolsParams {
+            query: Some("Draw".into()),
+            ..FindSymbolsParams::default()
+        })
+        .unwrap();
+    assert!(out.contains("trait Draw"), "finds trait declaration: {out}");
+    assert!(
+        out.contains("impl Draw for Dot"),
+        "finds trait implementation: {out}"
     );
 }

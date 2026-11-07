@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::common::fs::resolve::Scope;
-use crate::common::fs::walk::Kind;
+use crate::common::fs::walk::{Kind, SortBy};
 use crate::common::params::{PageParams, opt_string_or_vec};
 use crate::common::range::{Range, opt_range};
 use crate::common::{Result, ServerConfig};
@@ -33,10 +33,10 @@ pub struct LsParams {
     pub size: Option<Range>,
     /// `file`, `dir` or `symlink`.
     #[serde(default)]
-    pub kind: Option<String>,
+    pub kind: Option<Kind>,
     /// `name` (default), `size` (largest first), `modified` (newest first) or `extension`.
     #[serde(default)]
-    pub sort_by: Option<String>,
+    pub sort_by: Option<SortBy>,
     #[serde(default)]
     pub reverse: Option<bool>,
     /// Add permission bits and modification time (unix seconds).
@@ -61,7 +61,7 @@ pub fn ls(project: Option<&Project>, cfg: &ServerConfig, p: LsParams) -> Result<
         },
         show_gitignored: p.show_gitignored.unwrap_or(false),
         globs: p.glob.unwrap_or_default(),
-        kind: p.kind.as_deref().map(Kind::parse).transpose()?,
+        kind: p.kind,
         size: p.size,
         sort_by: p.sort_by,
         reverse: p.reverse.unwrap_or(false),

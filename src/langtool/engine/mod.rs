@@ -4,6 +4,7 @@
 
 pub mod aliases;
 pub mod callgraph;
+pub mod dependencies;
 pub mod fold;
 pub mod name_match;
 pub mod references;

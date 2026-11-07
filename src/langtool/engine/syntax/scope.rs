@@ -6,14 +6,42 @@
 
 use std::fmt;
 
+use super::spec::Definition;
+
 /// A definition that encloses other code: `mod east`, `impl Token<'a>`, `class A`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub kind: &'static str,
     pub name: String,
+    /// The trait an `impl` block implements: `Syntax` for `impl Syntax for Token`.
+    pub trait_name: Option<String>,
 }
 
 impl Frame {
+    pub fn new(kind: &'static str, name: &str) -> Self {
+        Self {
+            kind,
+            name: name.to_string(),
+            trait_name: None,
+        }
+    }
+
+    /// The frame that the definition `def` opens.
+    pub fn of(def: &Definition) -> Self {
+        Self {
+            kind: def.kind,
+            name: def.name.clone(),
+            trait_name: def.trait_name.clone(),
+        }
+    }
+
+    /// Whether a method in this frame can be called through a receiver typed as the trait
+    /// `name`: the trait itself and every `impl` of it.
+    pub fn implements(&self, name: &str) -> bool {
+        (self.kind == "trait" && self.bare_name() == name)
+            || self.trait_name.as_deref() == Some(name)
+    }
+
     /// The name without generic parameters: `Token` for `Token<'a>`.
     pub fn bare_name(&self) -> &str {
         self.name.split('<').next().unwrap_or(&self.name).trim()
@@ -48,10 +76,7 @@ impl Lineage {
         Self(
             frames
                 .iter()
-                .map(|&(kind, name)| Frame {
-                    kind,
-                    name: name.to_string(),
-                })
+                .map(|&(kind, name)| Frame::new(kind, name))
                 .collect(),
         )
     }
@@ -63,6 +88,10 @@ impl Lineage {
     /// Whether `prefix` is this lineage or its outer part: `a::b::c` starts with `a::b`.
     pub fn starts_with(&self, prefix: &Lineage) -> bool {
         self.0.starts_with(&prefix.0)
+    }
+
+    pub fn frames(&self) -> &[Frame] {
+        &self.0
     }
 
     /// The names of the enclosing definitions, outermost first.
@@ -85,11 +114,8 @@ impl Lineage {
         self.0.iter().any(Frame::is_test)
     }
 
-    pub fn push(&mut self, kind: &'static str, name: &str) {
-        self.0.push(Frame {
-            kind,
-            name: name.to_string(),
-        });
+    pub fn push(&mut self, frame: Frame) {
+        self.0.push(frame);
     }
 
     pub fn pop(&mut self) {
@@ -97,9 +123,9 @@ impl Lineage {
     }
 
     /// This lineage inside one more definition.
-    pub fn entered(&self, kind: &'static str, name: &str) -> Self {
+    pub fn entered(&self, frame: Frame) -> Self {
         let mut inner = self.clone();
-        inner.push(kind, name);
+        inner.push(frame);
         inner
     }
 }
@@ -148,7 +174,7 @@ mod tests {
     #[test]
     fn entered_leaves_the_outer_lineage_alone() {
         let outer = Lineage::of(&[("mod", "a")]);
-        let inner = outer.entered("fn", "f");
+        let inner = outer.entered(Frame::new("fn", "f"));
         assert_eq!(outer.to_string(), "a");
         assert_eq!(inner.to_string(), "a::f");
     }

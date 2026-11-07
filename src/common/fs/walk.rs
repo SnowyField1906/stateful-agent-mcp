@@ -7,6 +7,8 @@ use std::time::UNIX_EPOCH;
 
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::common::{AgentError, Result};
 
@@ -16,7 +18,8 @@ pub const MAX_ENTRIES: usize = 200_000;
 /// Largest file read as searchable text, in bytes.
 const MAX_SEARCHABLE_BYTES: u64 = 8 << 20;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     File,
     Dir,
@@ -42,6 +45,74 @@ impl Kind {
             Self::Dir => 'd',
             Self::Symlink => 'l',
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for Kind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Kind::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for Kind {
+    fn from(s: &str) -> Self {
+        Kind::parse(s).unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+impl From<String> for Kind {
+    fn from(s: String) -> Self {
+        Kind::from(s.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SortBy {
+    Name,
+    Size,
+    Modified,
+    Extension,
+}
+
+impl SortBy {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "name" => Ok(Self::Name),
+            "size" => Ok(Self::Size),
+            "modified" | "mtime" | "time" => Ok(Self::Modified),
+            "extension" | "ext" => Ok(Self::Extension),
+            other => Err(AgentError::invalid(
+                "sort_by",
+                format!("`{other}`; expected name, size, modified or extension"),
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SortBy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        SortBy::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<&str> for SortBy {
+    fn from(s: &str) -> Self {
+        SortBy::parse(s).unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+impl From<String> for SortBy {
+    fn from(s: String) -> Self {
+        SortBy::from(s.as_str())
     }
 }
 
@@ -192,13 +263,12 @@ fn extension(rel: &str) -> &str {
 /// `modified` (newest first) or `extension`.
 pub fn sort_entries(
     items: &mut [Entry],
-    sort_by: Option<&str>,
+    sort_by: Option<SortBy>,
     reverse: bool,
     dirs_first: bool,
 ) -> Result<()> {
-    let key = sort_by.map(|s| s.trim().to_ascii_lowercase());
-    match key.as_deref() {
-        None | Some("" | "name") => {
+    match sort_by.unwrap_or(SortBy::Name) {
+        SortBy::Name => {
             if dirs_first {
                 items.sort_by(|a, b| {
                     (a.kind != Kind::Dir)
@@ -207,21 +277,15 @@ pub fn sort_entries(
                 });
             }
         }
-        Some("size") => items.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.rel.cmp(&b.rel))),
-        Some("modified" | "mtime" | "time") => {
+        SortBy::Size => items.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.rel.cmp(&b.rel))),
+        SortBy::Modified => {
             items.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.rel.cmp(&b.rel)));
         }
-        Some("extension" | "ext") => items.sort_by(|a, b| {
+        SortBy::Extension => items.sort_by(|a, b| {
             extension(&a.rel)
                 .cmp(extension(&b.rel))
                 .then_with(|| a.rel.cmp(&b.rel))
         }),
-        Some(other) => {
-            return Err(AgentError::invalid(
-                "sort_by",
-                format!("`{other}`; expected name, size, modified or extension"),
-            ));
-        }
     }
     if reverse {
         items.reverse();

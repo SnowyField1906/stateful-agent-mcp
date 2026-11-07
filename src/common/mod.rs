@@ -16,5 +16,5 @@ pub mod text;
 
 pub use config::{AgentUseMode, ServerConfig};
 pub use error::{AgentError, Result};
-pub use params::PageParams;
+pub use params::{Names, PageParams};
 pub use range::Range;

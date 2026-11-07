@@ -10,7 +10,7 @@ use crate::common::{AgentError, Result};
 use crate::workflow::Project;
 use crate::workflow::engine::items::{NoteWriteOp, TaskWriteOp, clean_title};
 use crate::workflow::engine::ops::FileOp;
-use crate::workflow::engine::session::model::{TurnKey, TurnRecord};
+use crate::workflow::engine::session::model::TurnRecord;
 
 pub const DESCRIPTION: &str = "Close the active turn and open the next one, running its first note, task and file operations. `title` cannot be changed later. At least one operation is required. The active turn is reused instead when it recorded nothing, or when `title` is given and it holds only file edits (no title, notes or tasks): it gets the title. All or nothing: if a step fails, the file changes already written are reverted and the new turn is discarded (a reused turn is restored as it was).";
 
@@ -63,7 +63,6 @@ pub(crate) fn new_turn_with_paths(
             "a new turn needs at least one note, task or file operation; a title alone is not enough. Pass the turn's first changes together with `title`",
         ));
     }
-    let closed = project.active;
     let (reuse, had_edits) = {
         let active = project.active_turn()?;
         let titled = p.title.as_deref().is_some_and(|t| clean_title(t).is_some());
@@ -72,26 +71,45 @@ pub(crate) fn new_turn_with_paths(
             !active.is_empty(),
         )
     };
+    let closed = project.active;
     let snapshot = if reuse {
         Some(project.snapshot_active()?)
     } else {
         None
     };
+    if !reuse {
+        project.open_next_turn()?;
+    }
+    let external = match project.sync_external_edits() {
+        Ok(ext) => ext,
+        Err(err) => {
+            project.abort_turn(closed, snapshot);
+            return Err(err);
+        }
+    };
     // Build the turn's title, notes and tasks on a copy first, so that errors in them surface
     // before anything is changed. The copy is what gets stored later; the operations are
     // not applied a second time.
     let mut prepared = if reuse {
-        project.active_turn()?.clone()
+        match project.active_turn() {
+            Ok(t) => t.clone(),
+            Err(err) => {
+                project.abort_turn(closed, snapshot);
+                return Err(err);
+            }
+        }
     } else {
-        TurnRecord::new(TurnKey::new(closed.session, closed.turn + 1))
+        TurnRecord::new(project.active)
     };
-    apply_meta(project, &mut prepared, &p)?;
-
-    if !reuse {
-        project.open_next_turn()?;
+    if let Err(err) = apply_meta(project, &mut prepared, &p) {
+        project.abort_turn(closed, snapshot);
+        return Err(err);
     }
     match fill_turn(project, &p, prepared) {
         Ok((mut out, changed_paths)) => {
+            if let Some(external) = &external {
+                out["external_edits"] = external.report();
+            }
             if reuse {
                 out["note"] = json!(if had_edits {
                     "the active turn held only file edits, so it was titled and these changes went into it"

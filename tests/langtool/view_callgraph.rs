@@ -81,6 +81,41 @@ fn view_callgraph_accepts_qualified_symbols() {
 }
 
 #[test]
+fn view_callgraph_takes_several_symbols_from_one_index() {
+    let tmp = TempProject::new("code-calls-batch");
+    tmp.write("src/a.rs", "fn a() { b(); }\nfn b() { c(); }\nfn c() {}\n");
+    let state = State::new(ServerConfig::default());
+    let call = |symbols: &[&str]| {
+        state.langtool_view_callgraph(ViewCallgraphParams {
+            symbol: symbols
+                .iter()
+                .map(|symbol| symbol.to_string())
+                .collect::<Vec<_>>()
+                .into(),
+            implicit_path: Some(tmp.path_str()),
+            ..ViewCallgraphParams::default()
+        })
+    };
+
+    // One tree per symbol, in the order asked, separated by a blank line.
+    let out = call(&["a", "c"]).unwrap();
+    assert!(out.starts_with("a\t") && out.contains("\n\nc\t"), "{out}");
+    assert!(out.contains("outgoing:\n  b\t"), "{out}");
+    assert!(
+        !out.contains("\nb\t"),
+        "b is a callee here, not a tree: {out}"
+    );
+
+    // A name without a definition is reported where it was asked.
+    let out = call(&["a", "zzz"]).unwrap();
+    assert!(
+        out.starts_with("a\t") && out.contains("\n\nno function `zzz` found"),
+        "{out}"
+    );
+    assert_eq!(call(&["a", "a", " "]).unwrap(), call(&["a"]).unwrap());
+}
+
+#[test]
 fn view_callgraph_shows_callees_and_callers_across_files() {
     let tmp = TempProject::new("code-calls");
     tmp.write(
@@ -151,7 +186,9 @@ fn view_callgraph_shows_callees_and_callers_across_files() {
         err.to_string().contains("symbol"),
         "unexpected error: {err}"
     );
-    let err = calls("a", &|p| p.direction = Some("sideways".into())).unwrap_err();
+    let err =
+        serde_json::from_str::<ViewCallgraphParams>(r#"{"symbol": "a", "direction": "sideways"}"#)
+            .unwrap_err();
     assert!(
         err.to_string().contains("direction"),
         "unexpected error: {err}"
@@ -179,16 +216,19 @@ fn resolves_rust_method_receivers_from_types_and_constructors() {
     assert!(
         store.contains("  annotated\t")
             && store.contains("  aliased\t")
+            && store.contains("  wrapped\t")
             && store.contains("  constructed\t")
             && store.contains("  tuple_constructed\t")
             && store.contains("  receiver_is_self (in Store)\t")
             && store.contains("  built_with_self (in Store)\t"),
         "{out}"
     );
+    // A receiver typed `&dyn Putter` reaches the trait, not every `put`.
     assert!(
         store.contains("  ? unknown\t")
-            && store.contains("  ? wrapped\t")
+            && out.matches("? unknown").count() == 1
             && store.contains("  ? shadowed_pattern\t")
+            && !store.contains("? wrapped")
             && !store.contains("? annotated")
             && !store.contains("? aliased"),
         "{out}"
@@ -201,28 +241,19 @@ fn resolves_rust_method_receivers_from_types_and_constructors() {
         "{out}"
     );
     assert!(
-        queue.contains("  ? unknown\t")
-            && queue.contains("  ? wrapped\t")
+        !queue.contains("unknown")
+            && !queue.contains("wrapped")
             && queue.contains("  ? shadowed_pattern\t"),
         "{out}"
     );
 
-    let outgoing = state
-        .langtool_view_callgraph(ViewCallgraphParams {
-            symbol: "wrapped".into(),
-            implicit_path: Some(dir.path_str()),
-            direction: Some("outgoing".into()),
-            ..ViewCallgraphParams::default()
-        })
-        .unwrap();
-    assert!(
-        outgoing.contains("? put (in Store)")
-            && outgoing.contains("? put (in Queue)")
-            && !outgoing.contains("(external: put)"),
-        "{outgoing}"
-    );
-
-    for symbol in ["annotated", "receiver_is_self", "built_with_self"] {
+    // `Box<Store>` calls the methods of `Store`.
+    for symbol in [
+        "annotated",
+        "wrapped",
+        "receiver_is_self",
+        "built_with_self",
+    ] {
         let outgoing = state
             .langtool_view_callgraph(ViewCallgraphParams {
                 symbol: symbol.into(),
@@ -309,4 +340,96 @@ fn same_named_rust_receiver_types_remain_possible() {
         })
         .unwrap();
     assert_eq!(out.matches("? ambiguous").count(), 2, "{out}");
+}
+
+#[test]
+fn trait_object_and_impl_trait_receivers_reach_the_trait_and_its_implementations() {
+    let dir = TempProject::new("trait-receivers");
+    dir.write(
+        "src/lib.rs",
+        concat!(
+            "trait Draw {\n    fn draw(&self);\n}\n",
+            "struct Dot;\nstruct Line;\nstruct Other;\n",
+            "impl Draw for Dot {\n    fn draw(&self) {}\n}\n",
+            "impl Draw for Line {\n    fn draw(&self) {}\n}\n",
+            "impl Other {\n    fn draw(&self) {}\n}\n",
+            "fn by_ref(shape: &dyn Draw) { shape.draw(); }\n",
+            "fn boxed(shape: Box<dyn Draw + Send>) { shape.draw(); }\n",
+            "fn generic_impl(shape: impl Draw) { shape.draw(); }\n",
+            "fn concrete(shape: &Dot) { shape.draw(); }\n",
+            "fn pointer(shape: std::sync::Arc<Line>) { shape.draw(); }\n",
+            "fn bounded<T: Draw>(shape: &T) { shape.draw(); }\n",
+            "fn where_bounded<T>(shape: &T) where T: Draw { shape.draw(); }\n",
+        ),
+    );
+    let state = State::new(ServerConfig::default());
+    let outgoing = |symbol: &str| {
+        state
+            .langtool_view_callgraph(ViewCallgraphParams {
+                symbol: symbol.into(),
+                implicit_path: Some(dir.path_str()),
+                direction: Some("outgoing".into()),
+                ..ViewCallgraphParams::default()
+            })
+            .unwrap()
+    };
+
+    // Dynamic dispatch: the trait's declaration and every `impl Draw for T`, never an inherent
+    // method of an unrelated type, and always uncertain because other implementors may exist.
+    for symbol in [
+        "by_ref",
+        "boxed",
+        "generic_impl",
+        "bounded",
+        "where_bounded",
+    ] {
+        let out = outgoing(symbol);
+        assert!(
+            out.contains("? draw (in Draw)")
+                && out.contains("? draw (in Dot)")
+                && out.contains("? draw (in Line)"),
+            "{symbol}: {out}"
+        );
+        assert!(!out.contains("(in Other)"), "{symbol}: {out}");
+    }
+
+    // Named types, also behind `Arc`, still resolve to exactly one definition.
+    let out = outgoing("concrete");
+    assert!(
+        out.contains("draw (in Dot)") && !out.contains("? draw") && !out.contains("(in Line)"),
+        "{out}"
+    );
+    let out = outgoing("pointer");
+    assert!(
+        out.contains("draw (in Line)") && !out.contains("? draw") && !out.contains("(in Dot)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn view_callgraph_file_path_normalizes_relative_and_absolute_paths() {
+    let dir = TempProject::new("callgraph-paths");
+    dir.write("src/lib.rs", "fn a() { b(); }\nfn b() {}\n");
+    let state = dir.open(ServerConfig::default());
+
+    // Relative with ./ prefix
+    let out = state
+        .langtool_view_callgraph(ViewCallgraphParams {
+            symbol: "a".into(),
+            file_path: Some("./src/lib.rs".into()),
+            ..ViewCallgraphParams::default()
+        })
+        .unwrap();
+    assert!(out.contains("a\tsrc/lib.rs:1..1"), "{out}");
+
+    // Absolute path
+    let abs = dir.root.join("src/lib.rs").to_string_lossy().into_owned();
+    let out = state
+        .langtool_view_callgraph(ViewCallgraphParams {
+            symbol: "a".into(),
+            file_path: Some(abs),
+            ..ViewCallgraphParams::default()
+        })
+        .unwrap();
+    assert!(out.contains("a\tsrc/lib.rs:1..1"), "{out}");
 }

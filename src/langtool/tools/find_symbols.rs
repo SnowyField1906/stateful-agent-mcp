@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 
-use crate::common::params::PageParams;
+use crate::common::params::{Names, PageParams};
 use crate::common::{AgentError, Result, ServerConfig};
 use crate::langtool::engine::name_match::similarity_score;
 use crate::langtool::engine::scan::{ScanTarget, scan};
@@ -19,7 +19,7 @@ use crate::langtool::engine::symbols::{self, Symbol};
 use crate::langtool::engine::syntax::{SymbolSelector, registry};
 use crate::workflow::Project;
 
-pub const DESCRIPTION: &str = "List definitions in files with a registered Tree-sitter grammar, in one file or below a directory. Each row is the source lines and the signature, indented under its parent definition, or ending with `(in Parent::Path)` when the parent is not listed; filter by `query` (name substring; `Type::name` also requires `Type` to enclose it), `scope` (enclosing-scope substring) or `kinds` (language-to-kind map; errors list allowed kinds). Language-specific nested items are opt-in; `docs` adds the first documentation line. Use the ranges with `langtool_read_file`.";
+pub const DESCRIPTION: &str = "List definitions in files with a registered Tree-sitter grammar, in one file or below a directory. Each row is the source lines and the signature, indented under its parent definition, or ending with `(in Parent::Path)` when the parent is not listed; filter by `query` (one name or a list, each a name substring; `Type::name` also requires `Type` to enclose it), `scope` (enclosing-scope substring) or `kinds` (language-to-kind map; errors list allowed kinds). Language-specific nested items are opt-in; `docs` adds the first documentation line; `include_body` prints the source below the row of each listed definition of up to 50 lines that has no listed definition inside it, as rows `  N<tab>text`. Use the ranges with `langtool_read_file`.";
 
 /// Definitions (functions, types, modules, ...) in a file or below a directory.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -27,10 +27,12 @@ pub struct FindSymbolsParams {
     /// File or directory, relative to the project root or absolute. Default `.`.
     #[serde(default)]
     pub implicit_path: Option<String>,
-    /// Only symbols whose name contains this text (case-insensitive). A qualified query such as
-    /// `Store::put`, `Store.put` or `Store/put` also requires `Store` to enclose the symbol.
+    /// Only symbols whose name contains this text (case-insensitive); a list shows the symbols
+    /// that match any of its entries. A qualified query such as `Store::put`, `Store.put` or
+    /// `Store/put` also requires `Store` to enclose the symbol.
     #[serde(default)]
-    pub query: Option<String>,
+    #[schemars(with = "Option<Vec<String>>")]
+    pub query: Option<Names>,
     /// Only symbols whose enclosing scope, written as a qualified path (`east::Token`), contains
     /// this text (case-insensitive).
     #[serde(default)]
@@ -45,6 +47,10 @@ pub struct FindSymbolsParams {
     /// Add the first documentation line of each definition as a fourth column.
     #[serde(default)]
     pub docs: Option<bool>,
+    /// Print the source of each listed definition of up to 50 lines below its row (rows of
+    /// `  N<tab>text`), unless another listed definition lies inside it. Default false.
+    #[serde(default)]
+    pub include_body: Option<bool>,
     #[serde(flatten)]
     pub page: PageParams,
 }
@@ -97,7 +103,11 @@ pub fn find_symbols(
     cfg: &ServerConfig,
     p: FindSymbolsParams,
 ) -> Result<String> {
-    let query = p.query.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let queries = p.query.as_ref().map(Names::cleaned).unwrap_or_default();
+    let selectors: Vec<SymbolSelector<'_>> = queries
+        .iter()
+        .map(|query| SymbolSelector::parse(query))
+        .collect();
     let scope = p
         .scope
         .as_deref()
@@ -150,7 +160,10 @@ pub fn find_symbols(
         show_gitignored: p.show_gitignored,
     };
     let docs = p.docs.unwrap_or(false);
-    let mut suggestions = BTreeMap::<String, usize>::new();
+    let include_body = p.include_body.unwrap_or(false);
+    // Per query: whether a definition matched it, and the close names for when none did.
+    let mut matched = vec![false; queries.len()];
+    let mut suggestions = vec![BTreeMap::<String, usize>::new(); queries.len()];
     let found = scan(project, &target, |lang, syntax, text, _| {
         let allowed = match &kinds_filter {
             Some(map) => match map.get(lang.name) {
@@ -169,36 +182,49 @@ pub fn find_symbols(
                 .as_ref()
                 .is_none_or(|scope| symbol.scope.to_string().to_lowercase().contains(scope))
         };
-        if let Some(query) = query {
-            let selector = SymbolSelector::parse(query);
+        for (selector, known) in selectors.iter().zip(suggestions.iter_mut()) {
             for symbol in all.iter().filter(|symbol| {
                 kind_allowed(symbol)
                     && scope_allowed(symbol)
                     && selector.matches_scope(&symbol.scope)
             }) {
                 if let Some(distance) = similarity_score(selector.name, &symbol.name) {
-                    suggestions
+                    known
                         .entry(symbol.name.clone())
-                        .and_modify(|known| *known = (*known).min(distance))
+                        .and_modify(|best| *best = (*best).min(distance))
                         .or_insert(distance);
                 }
             }
         }
-        Some(
-            all.into_iter()
-                .filter(|symbol| {
-                    symbols::matches(symbol, query, None)
-                        && kind_allowed(symbol)
-                        && scope_allowed(symbol)
-                })
-                .collect::<Vec<Symbol>>(),
-        )
+        let mut listed: Vec<Symbol> = all
+            .into_iter()
+            .filter(|symbol| {
+                if !kind_allowed(symbol) || !scope_allowed(symbol) {
+                    return false;
+                }
+                if queries.is_empty() {
+                    return true;
+                }
+                let mut any = false;
+                for (&query, hit) in queries.iter().zip(matched.iter_mut()) {
+                    if symbols::matches(symbol, Some(query), None) {
+                        *hit = true;
+                        any = true;
+                    }
+                }
+                any
+            })
+            .collect();
+        if include_body {
+            symbols::attach_bodies(&mut listed, text);
+        }
+        Some(listed)
     })?;
     let mut out = found.render(cfg, &p.page, "no symbols", |group| {
         symbols::render(group, docs)
     })?;
-    if query.is_some() && out.starts_with("no symbols") && !suggestions.is_empty() {
-        let mut near: Vec<_> = suggestions.into_iter().collect();
+    for (at, query) in queries.iter().enumerate().filter(|(at, _)| !matched[*at]) {
+        let mut near: Vec<_> = std::mem::take(&mut suggestions[at]).into_iter().collect();
         near.sort_by_key(|(name, distance)| (*distance, name.clone()));
         let near = near
             .into_iter()
@@ -206,7 +232,14 @@ pub fn find_symbols(
             .map(|(name, _)| name)
             .collect::<Vec<_>>()
             .join(", ");
-        out.push_str(&format!("hint: similar symbol names: {near}\n"));
+        out.push_str(&match (queries.len() > 1, near.is_empty()) {
+            (false, true) => String::new(),
+            (false, false) => format!("hint: similar symbol names: {near}\n"),
+            (true, true) => format!("no symbols for `{query}`\n"),
+            (true, false) => {
+                format!("no symbols for `{query}`; similar symbol names: {near}\n")
+            }
+        });
     }
     Ok(out)
 }

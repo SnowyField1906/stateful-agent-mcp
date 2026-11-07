@@ -6,6 +6,8 @@ use super::{Alias, CallKind, CallSite, Definition, Syntax, line_span, node_text}
 
 mod receiver;
 
+use receiver::Receiver;
+
 pub struct RustSyntax;
 
 impl Syntax for RustSyntax {
@@ -84,9 +86,13 @@ impl Syntax for RustSyntax {
             "macro_definition" => "macro",
             "impl_item" => {
                 let target = node.child_by_field_name("type")?;
+                let trait_name = node
+                    .child_by_field_name("trait")
+                    .and_then(|node| receiver::type_path_name(node, source));
                 return Some(Definition {
                     kind: "impl",
                     name: node_text(target, source).to_string(),
+                    trait_name,
                 });
             }
             _ => return None,
@@ -95,6 +101,7 @@ impl Syntax for RustSyntax {
         Some(Definition {
             kind,
             name: node_text(name, source).to_string(),
+            trait_name: None,
         })
     }
 
@@ -196,10 +203,12 @@ fn target_site(node: Node<'_>, source: &str) -> Option<CallSite> {
             let receiver = node.child_by_field_name("value")?;
             let kind = if node_text(receiver, source) == "self" {
                 CallKind::Own
-            } else if let Some(ty) = receiver::infer_type(node, source) {
-                CallKind::MethodOf(ty)
             } else {
-                CallKind::Method
+                match receiver::infer_type(node, source) {
+                    Some(Receiver::Type(ty)) => CallKind::MethodOf(ty),
+                    Some(Receiver::Trait(name)) => CallKind::Dyn(name),
+                    None => CallKind::Method,
+                }
             };
             Some(site(name, kind))
         }

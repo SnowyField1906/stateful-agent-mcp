@@ -17,7 +17,7 @@ pub struct RunActionParams {
     /// Language section of the configuration, for example `rust` or `python`.
     pub language: String,
     /// One of `lint`, `build`, `test`, `install`, `remove`.
-    pub action: String,
+    pub action: Action,
     /// Arguments, for commands configured with `{args}`. Pass an empty string to run such a
     /// command without arguments, or `--help` to see what it accepts.
     #[serde(default)]
@@ -33,9 +33,7 @@ pub(crate) fn run_action_with_status(
     p: RunActionParams,
 ) -> Result<(String, bool)> {
     let language = p.language.trim();
-    let action = Action::parse(p.action.trim()).ok_or_else(|| {
-        AgentError::invalid("action", "expected lint, build, test, install or remove")
-    })?;
+    let action = p.action;
     let config = project.language_config()?;
     let tooling = config.language(language).ok_or_else(|| {
         AgentError::NotFound(format!(
