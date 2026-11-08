@@ -3,28 +3,6 @@
 version = 4
 
 [[package]]
-name = "agent-mcp"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "ignore",
- "regex",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-python",
- "tree-sitter-rust",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,16 +584,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxied-agent-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -867,6 +835,133 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "stateful-agent"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-server",
+ "stateful-agent-workflow",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "stateful-agent-common"
+version = "0.2.0"
+dependencies = [
+ "ignore",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "stateful-agent-filesystem"
+version = "0.2.0"
+dependencies = [
+ "regex",
+ "schemars",
+ "serde",
+ "stateful-agent-common",
+ "stateful-agent-testkit",
+]
+
+[[package]]
+name = "stateful-agent-langtool"
+version = "0.2.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-language",
+ "stateful-agent-testkit",
+ "stateful-agent-toolchain",
+ "tree-sitter",
+]
+
+[[package]]
+name = "stateful-agent-language"
+version = "0.2.0"
+dependencies = [
+ "ignore",
+ "stateful-agent-testkit",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+]
+
+[[package]]
+name = "stateful-agent-proxy"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-testkit",
+ "stateful-agent-workflow",
+ "tokio",
+]
+
+[[package]]
+name = "stateful-agent-server"
+version = "0.2.0"
+dependencies = [
+ "rmcp",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-filesystem",
+ "stateful-agent-langtool",
+ "stateful-agent-language",
+ "stateful-agent-testkit",
+ "stateful-agent-toolchain",
+ "stateful-agent-workflow",
+ "tokio",
+]
+
+[[package]]
+name = "stateful-agent-testkit"
+version = "0.2.0"
+dependencies = [
+ "stateful-agent-common",
+]
+
+[[package]]
+name = "stateful-agent-toolchain"
+version = "0.2.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-language",
+ "toml",
+]
+
+[[package]]
+name = "stateful-agent-workflow"
+version = "0.2.0"
+dependencies = [
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "stateful-agent-common",
+ "stateful-agent-langtool",
+ "stateful-agent-language",
+ "stateful-agent-testkit",
+ "stateful-agent-toolchain",
 ]
 
 [[package]]

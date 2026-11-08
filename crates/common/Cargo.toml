@@ -1,0 +1,15 @@
+[package]
+name = "stateful-agent-common"
+description = "Shared foundation of stateful-agent: errors, configuration, paths, paging, text helpers and directory walking"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ignore.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

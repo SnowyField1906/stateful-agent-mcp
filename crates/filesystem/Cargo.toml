@@ -1,0 +1,22 @@
+[package]
+name = "stateful-agent-filesystem"
+description = "Read-only, gitignore-aware listing, search and metadata tools of stateful-agent"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+[dependencies]
+stateful-agent-common.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+stateful-agent-testkit.workspace = true

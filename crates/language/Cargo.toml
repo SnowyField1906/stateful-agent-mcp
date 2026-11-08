@@ -1,0 +1,23 @@
+[package]
+name = "stateful-agent-language"
+description = "The languages stateful-agent knows and what each provides to the code intelligence tools"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+[dependencies]
+ignore.workspace = true
+toml.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+
+[dev-dependencies]
+stateful-agent-testkit.workspace = true

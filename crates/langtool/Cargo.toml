@@ -1,0 +1,25 @@
+[package]
+name = "stateful-agent-langtool"
+description = "Tree-sitter code intelligence tools of stateful-agent and the runner of the project's language commands"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+[dependencies]
+stateful-agent-common.workspace = true
+stateful-agent-language.workspace = true
+stateful-agent-toolchain.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tree-sitter.workspace = true
+
+[dev-dependencies]
+stateful-agent-testkit.workspace = true

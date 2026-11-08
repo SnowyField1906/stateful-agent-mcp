@@ -1,0 +1,31 @@
+[package]
+name = "stateful-agent-proxy"
+description = "Drop-in hot-reloading proxy for stateful-agent"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+autotests = false
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "stateful-agent-proxy"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["process", "time"] }
+
+[dev-dependencies]
+stateful-agent-common.workspace = true
+stateful-agent-testkit.workspace = true
+stateful-agent-workflow.workspace = true

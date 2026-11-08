@@ -1,20 +1,47 @@
-[package]
-name = "agent-mcp"
+[workspace]
+resolver = "3"
+members = [
+    "crates/common",
+    "crates/filesystem",
+    "crates/langtool",
+    "crates/language",
+    "crates/server",
+    "crates/testkit",
+    "crates/toolchain",
+    "crates/workflow",
+    "stateful-agent",
+    "stateful-agent-proxy",
+]
+# The proxy is a separate product: built and tested with `-p stateful-agent-proxy`.
+default-members = [
+    "crates/common",
+    "crates/filesystem",
+    "crates/langtool",
+    "crates/language",
+    "crates/server",
+    "crates/testkit",
+    "crates/toolchain",
+    "crates/workflow",
+    "stateful-agent",
+]
+
+[workspace.package]
 version = "0.2.0"
 authors = ["SnowyField"]
 edition = "2024"
 rust-version = "1.88"
 license = "LGPL-3.0-or-later"
-description = "MCP server for coding agents: Markdown-backed session/turn state, atomic file operations, git-like diff/history/recovery, and gitignore-aware filesystem tools"
 
-[workspace]
-members = [".", "src-proxy"]
-
-[[bin]]
-name = "agent-mcp"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+stateful-agent-common = { path = "crates/common" }
+stateful-agent-filesystem = { path = "crates/filesystem" }
+stateful-agent-langtool = { path = "crates/langtool" }
+stateful-agent-language = { path = "crates/language" }
+stateful-agent-server = { path = "crates/server" }
+stateful-agent-testkit = { path = "crates/testkit" }
+stateful-agent-toolchain = { path = "crates/toolchain" }
+stateful-agent-workflow = { path = "crates/workflow" }
+stateful-agent = { path = "stateful-agent" }
 anyhow = "1.0.103"
 clap = { version = "4.6.1", features = ["derive"] }
 ignore = "0.4"

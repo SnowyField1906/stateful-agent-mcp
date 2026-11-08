@@ -1,0 +1,12 @@
+[package]
+name = "stateful-agent-testkit"
+description = "Test helpers shared by the crates of stateful-agent: scratch directories, a sample library and a fixed workspace"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+stateful-agent-common.workspace = true

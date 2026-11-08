@@ -1,0 +1,16 @@
+[package]
+name = "stateful-agent-toolchain"
+description = "The project's configured lint, build, test, install and remove commands, and formatting"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+stateful-agent-common.workspace = true
+stateful-agent-language.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

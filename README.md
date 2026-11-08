@@ -2,34 +2,75 @@
 
 ## What is this MCP?
 
-This MCP server offers its **own git-like version management** and **code-intelligence tools** (only `rust` and `python` supported for now). It lets token-limited coding agents:
+This MCP server offers its own **code-intelligence tools** (currently only `rust` and `python` supported for advanced tools). It allows limited-token AI clients to work onto our local codebase with no friction:
 
-- Carry minimal cross-session context like insight notes, task handovers, or file diffs between versions.
-- Have minimal token usage by reasoning over code-intelligence tools like read files with fold levels, find symbols, trace references or view call graph, etc.
-- Patch directly to the registered local codebase with high fault-tolerance and human-review ability (with `.md` database files also served as logs).
-- Execute essential code actions like `lint`, `build`, `test`, etc., while let the MCP server format files and squash changes in backstage.
+1. **Reason with code-intelligence tools**:
 
-Over the conveniences and token optimization, this MCP server is designed especially for my convention of "LLM-ergonomic" and "relay race" workflow.
+   There are several tools that allows AI agent to inspect the unfamiliar codebase in a familiar reverse engineering workflow and result formats, such as `find_symbols`, `find_references`, `view_callgraph`, etc.
+
+2. **Edit with various smart patch modes**:
+
+   There are also high-level edit tools as how humans conveniently work, such as `ReplaceSymbol`, `InsertBeforeSymbol`, `InsertAfterSymbol`, `RenameSymbol`, etc.
+
+3. **Get aligned by hints embedded in tool responses**:
+
+   Inefficient tool call patterns are tracked to help AI clients learn gently and effectively during interaction time, instead of from long strict instructions in the beginning.
+
+4. **Have high fault-tolerance**:
+
+   There are smart resolvers underlying this MCP server that corrects the most common mistakes, which saves token and time from wasteful retries.
+
+---
+
+This MCP server also offers its own **git-like version management** which especially optimized for an effective workflow. It allows limited-token AI clients to work smoothly between small fresh sessions:
+
+5. **Carry minimal cross-session context**:
+
+   It supports the AI client to grab from relevant insight notes to the exact diff changes between any session, rather than being fed massive handoff documents.
+
+6. **Work effectively as a relay race (1)**:
+
+   This MCP server encourages the AI client to make dripping changes and proactively handover the gaps that couldn't fill right away from preexisting context.
+
+7. **Work effectively as a relay race (2)**:
+
+   The fresh AI client can start to work right away with contexted tasks from prior AI client, rather than wasting time to understand codebase or general plans from scratch.
+
+8. **Have high conflict-resistance**:
+
+   Concurrent edits by user on disk are detectable and auto-resolved/ignored if needed, otherwise, the AI clients can be notified of the critical changes and resolve it with least actions needed.
+
+---
+
+Over the conveniences for AI clients, this MCP is also aimed for our convenience:
+
+9. **Prioritize readability and reviewability**:
+
+   The database of this MCP server are well-formatted `.md` files so that we can easily track the progress from incremental tasks, edit the insight notes, or review the file diffs, all within each turn.
+
+10. **Prioritize automatic work loop**:
+
+    Essential code actions like `lint`, `build`, `test` are available when we configure them so that the AI clients can verify the code by themself without handing over back to us such tasks of running code actions.
+
+11. **No underlying language servers**:
+
+    There are some well-known MCP servers that support code-intelligence tools like [@oraios/serena](https://github.com/oraios/serena), yet it requires heavy language servers that indexed the entire codebase on startup and fail to work with a wall of errors if there is any imperfect patch, which is unlikely to ensure when updating code.
+
+12. **Allow to code on itself without manual reload**:
+
+    If there is any feature you want to improve or add, this repository also offers an alternative MCP server that can hot-reload the standard one, which allows the AI client to use the MCP server to coding on itself, experiment new changes immediately by itself, and improve it by itself like a loop of self-evolution, without your intervention to restart the MCP server or the AI client.
 
 ## Why this MCP?
 
 Many AI chat platforms nowadays (like Claude and ChatGPT) have limited free-tier usage and prohibit continuing a shared chat from another account (yes, they know there'll be ones like me).
 
-If you can't afford Claude Code but have 10 Claude free-tier accounts, or have ambitious projects that come with troubles when splitting long-running tasks into multiple sessions across multiple chat windows, then you might need an MCP server that lets AI of different sessions understand each other's work and handover tasks with minimal token usage.
-
-_Nowadays it's filled with_:
-
-1. **Generous token usage yet stupid AIs**: Gemini is really cheap, yet I have many problems with its habit of exaggeration and ostentation.
-2. **Smart yet stingy token usage AIs**: I extremely love Claude, yet I suffer a lot when carefully considering tokens to give tasks, instructions, and the codebase to it.
-3. **Cheap yet limited-capacity conversational AIs**: AI agents are powerful yet only offered at expensive prices, whereas conversational platforms (like AI Studio, Gemini, etc.) are very limited in understanding tasks and code on your computer properly.
-
-...and this MCP just _enables the fourth option_.
+If you can't afford Claude Code but have 10 Claude free-tier accounts, or have ambitious projects that come with troubles when splitting long-running tasks into multiple sessions across multiple chat windows, then you might need an MCP server that not only lets AI work directly onto your local codebase but also lets AI of different sessions understand each other's work and handover tasks with minimal token usage.
 
 ## On the "LLM-ergonomic workflow" philosophy
 
 Humans and LLMs work in very different ways, and we unintentionally design it following our heuristics. This MCP is built around bending a few human habits into something an LLM can actually survive.
 
-### ~~Brutely align with instructions~~ → Gently align AI with hints embedded in tool call responses
+### Gently align AI with hints embedded in tool call responses
 
 Massive instructions consume token unnecessarily before ever starting anything. And strict instructions makes AI act in extreme manner due to pink-elephant phenomenon _(if you're told to not imagine a pink elephant, you can't help but imagine it or get distracted)_.
 
@@ -39,7 +80,7 @@ Being inspired by it, I discovered that instead of trying to align the AI in the
 
 By this, the AI will be gently and naturally aligned with the workflow orbit just by repeated interactions with tool calls, without wasting token unnecessarily or making it behave extremely.
 
-### ~~Brutely ask do to defined goal or plans~~ → Let AI proactively handing over necessary updates next
+### Let AI proactively handing over necessary updates next
 
 Giving one big task is obviously a bad idea because it has to guess its own location in every fresh session. Yet dividing it into several small tasks is not better either because not only it will be get lost but also coding tasks are interdependent in nature.
 
@@ -47,7 +88,7 @@ But when AI has worked on a task and handover the gaps it couldn't fill right aw
 
 All handover tasks are automatically treated as done within turn unless explicitly passed to next turn with `RollOver`, which I expect to reinforce its awareness of the work.
 
-### ~~Feed previous turns' responses for context~~ → Provide cleaner context from code diffs and side notes within
+### Provide cleaner context from code diffs and side notes within
 
 Presenting updates of work in natural language encourages worthless exaggeration and dangerous deception, also the last-session AI is likely not able to generate work summaries since it often runs out of token halfway.
 
@@ -58,13 +99,13 @@ By letting current turn settle grounding points with insight notes and explicit 
 
 Allowing extracting insight notes and incremental short-term tasks across between checkpoints is incredibly powerful regarding to study tasks.
 
-### ~~Send the entire codebase~~ → Let AI reason with code-intelligence tools
+### Let AI reason with code-intelligence tools
 
 Pareto rule says that only 20% actors takes responsibility for 80% consequences. Regardless of the codebase size, you can still deliver the major of important information in just 20% tokens.
 
 With such code intelligence tools like `langtool_find_symbols`, `langtool_find_references`, or `langtool_view_callgraph` enabled, AI doesn't need to trace file by file over codebase but can analyze it systematically and effectively. Which empowers it further more than just understanding session context by file diffs.
 
-### ~~Demand perfect responses~~ → Tolerate dripping changes
+### Tolerate dripping changes
 
 Like how most coding agents nowadays work, instead of letting it attempt to get most things right at once. It's more flexible and recoverable to patch multiple times like soft checkpoints, and the MCP just automatically squashes them into net diffs in backstage.
 
@@ -290,7 +331,7 @@ remove  = "cargo remove {args}"
 format  = "python -m black -q -"
 lint    = "python -m black --check --quiet . {args}"
 build   = "python -m compileall -q ."
-test    = "cargo test {args}"
+test    = "python -m pytest {args}"
 install = "python -m pip install {args}"
 remove  = "python -m pip uninstall -y {args}"
 ```
@@ -300,8 +341,8 @@ The server speaks MCP over stdio and your client normally launches it. A typical
 ```json
 {
 	"mcpServers": {
-		"agent-mcp": {
-			"command": "/path/to/stateful-agent-mcp/target/release/agent-mcp",
+		"stateful-agent": {
+			"command": "/path/to/stateful-agent-mcp/target/release/stateful-agent",
 			"args": ["--mode", "session-based"]
 		}
 	}
@@ -311,7 +352,7 @@ The server speaks MCP over stdio and your client normally launches it. A typical
 More specific schema:
 
 ```text
-/path/to/stateful-agent-mcp/target/release/agent-mcp [OPTIONS] [PROJECT]
+/path/to/stateful-agent-mcp/target/release/stateful-agent [OPTIONS] [PROJECT]
 
   [PROJECT]                         register this project at startup
   --mode <continuous|session-based> usage guide to serve (default: continuous)
@@ -324,13 +365,57 @@ Then ask the AI to register your project by its absolute path.
 
 The mode only changes the advice in the guide. `continuous` is for agents that run many tool calls in a row and moves to a new turn after each settled step, like a commit. `session-based` is for chats that can be cut off at any time, so it keeps a handover ready all along. Logs go to stderr, and `STATEFUL_AGENT_MCP_LOG=debug` turns up the detail.
 
+## Hot Reload Proxy
+
+In case you want to an AI client using `stateful-agent` to code on itself, experiment new changes by itself, and then improve itself, without our intervention, then you can configure another MCP server `stateful-agent-proxy` that can hot reload the standard server and pass generic calls to updated schema or new tools.
+
+### Tools
+
+<table>
+  <thead>
+    <tr>
+      <th style="text-align:left;vertical-align:middle;">Scope</th>
+      <th style="text-align:left;vertical-align:middle;">Permission</th>
+      <th style="text-align:left;vertical-align:middle;">Name</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="3" style="text-align:left;vertical-align:middle;"><b>Proxy</b></td>
+      <td rowspan="2" style="text-align:left;vertical-align:middle;">Write</td>
+      <td style="text-align:left;vertical-align:middle;"><code>proxy_call_tool</code></td>
+    </tr>
+    <tr>
+      <td style="text-align:left;vertical-align:middle;"><code>proxy_reload</code></td>
+    </tr>
+    <tr>
+      <td style="text-align:left;vertical-align:middle;">Read-only</td>
+      <td style="text-align:left;vertical-align:middle;"><code>proxy_list_tools</code></td>
+    </tr>
+  </tbody>
+</table>
+
+### Setup
+
+```json
+{
+	"mcpServers": {
+		"stateful-agent-proxy": {
+			"command": "/path/to/stateful-agent-mcp/target/release/stateful-agent-proxy",
+			"args": ["--mode", "session-based"]
+		}
+	}
+}
+```
+
+It takes same argument options as the standard one.
+
 ## Roadmap
 
-- Handle concurrent mid-turn edits made directly by the user on disk.
-- Support configuring external code formatters and linters on the server.
-- Support a "squash" tool that folds unnecessary past done sessions into fewer, compact, fresh ones.
-- Support long-term "goals" to balance long-term instructions against short-term tasks.
-- Support long-term "docs.{scope}" to balance long-term instructions against short-term notes.
+- Support multiple codebase analyze modes such as `explore` (focused on understanding the entry points and initial overview) or `feature` (focused on understanding the context of relevant and dependent implementations), etc.
+- Support a `squash` tool that folds unnecessary past done sessions into fewer, compact, fresh ones.
+- Support long-term `goals` to balance long-term instructions against short-term tasks.
+- Support long-term `docs.{scope}` to balance long-term instructions against short-term notes.
 - Encourage AI makes temporal tests for turn-specific changes with `scratch-test` instead of stuffing them into the main test files that procedures dead codes.
 
 ## License
