@@ -15,7 +15,8 @@ use crate::common::fs::walk::{Kind, WalkOpts, walk};
 use crate::common::pathspec::matches_pathspec;
 use crate::common::{AgentError, Result};
 use crate::langtool::engine::references;
-use crate::langtool::engine::syntax::{SymbolSelector, Syntax, registry};
+use crate::langtool::engine::selector::SymbolSelector;
+use crate::language::{Syntax, registry};
 
 use super::overlay::Overlay;
 use super::symbol_edit::has_syntax_errors;

@@ -1,5 +1,6 @@
 mod common;
 mod workflow {
+    mod case_insensitive;
     mod external_edits;
     mod get_files_diff;
     mod get_turns;

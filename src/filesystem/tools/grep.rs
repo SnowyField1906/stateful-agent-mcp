@@ -19,8 +19,7 @@ use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, WalkOpts, read_searchable, walk};
 use crate::common::params::{PageParams, flex_u64, opt_string_or_vec};
 use crate::common::text::{bounded, clip};
-use crate::common::{AgentError, Range, Result, ServerConfig};
-use crate::workflow::Project;
+use crate::common::{AgentError, Range, Result, ServerConfig, Workspace, root_of};
 
 pub const DESCRIPTION: &str = "Search a file or directory by regex (Rust syntax; `literal` for plain text). `output` is `content`, `files` or `count`. Respects `.gitignore`; skips binary files and files over 8 MiB.";
 
@@ -99,9 +98,13 @@ impl From<String> for GrepOutputMode {
     }
 }
 
-pub fn grep(project: Option<&Project>, cfg: &ServerConfig, p: GrepParams) -> Result<String> {
+pub fn grep(
+    workspace: Option<&dyn Workspace>,
+    cfg: &ServerConfig,
+    p: GrepParams,
+) -> Result<String> {
     let scope = Scope::new(
-        project.map(Project::root_dir),
+        root_of(workspace),
         p.implicit_path.as_deref(),
         "implicit_path",
     )?;

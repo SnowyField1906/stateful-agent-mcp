@@ -11,6 +11,23 @@ use agent_mcp::workflow::tools::RegisterParams;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// A small library with a type, its methods and two free functions.
+pub const LIB: &str = concat!(
+    "pub struct Store;\n",
+    "impl Store {\n",
+    "    pub fn new() -> Store { Store }\n",
+    "    pub fn put(\n",
+    "        &self,\n",
+    "        key: &str,\n",
+    "    ) -> Option<String> {\n",
+    "        let v = Some(key.to_string());\n",
+    "        v.map(|s| s)\n",
+    "    }\n",
+    "}\n",
+    "pub fn open() -> Store { Store::new() }\n",
+    "pub fn setup() { let s = open(); s.put(\"k\"); }\n",
+);
+
 /// A scratch directory under the system temp dir, removed on drop.
 pub struct TempProject {
     pub root: PathBuf,

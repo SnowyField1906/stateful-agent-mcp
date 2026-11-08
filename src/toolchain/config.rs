@@ -19,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::common::pathspec::AGENTS_DIR;
 use crate::common::{AgentError, Result};
 
 /// File name under `.AGENTS/`.
@@ -123,6 +124,11 @@ pub struct LanguageConfig {
 }
 
 impl LanguageConfig {
+    /// Read the configuration of the project rooted at `root`.
+    pub fn load_at(root: &Path) -> Result<Self> {
+        Self::load(&root.join(AGENTS_DIR))
+    }
+
     /// Read `<agents_dir>/config.toml`. A missing file gives an empty configuration. The file is
     /// read on every call so edits take effect without restarting the server.
     pub fn load(agents_dir: &Path) -> Result<Self> {

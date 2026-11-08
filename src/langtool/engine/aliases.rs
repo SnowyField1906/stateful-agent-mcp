@@ -6,7 +6,7 @@
 
 use tree_sitter::Node;
 
-use super::syntax::{Alias, Syntax, parse};
+use crate::language::{Alias, Syntax, parse};
 
 /// All import aliases declared in `source`, in source order. `None` when it cannot be parsed.
 pub fn aliases(syntax: &dyn Syntax, source: &str) -> Option<Vec<Alias>> {

@@ -28,11 +28,14 @@ fn callgraph_resolves_paths_hides_noise_and_suggests_names() {
     // `Store::new()` reaches the method; the `Some(..)`, `to_string` and `map` calls are not
     // listed as functions, only summarized.
     let out = call("put", "outgoing", false, false).unwrap();
-    assert!(out.contains("(external: to_string, map)"), "{out}");
+    assert!(out.contains("(external: 2 std)"), "{out}");
     assert!(!out.contains("Some"), "{out}");
 
     let out = call("put", "outgoing", false, true).unwrap();
-    assert!(out.contains("to_string\t(external)"), "{out}");
+    // `v` is inferred as an `Option` that nothing imports or defines: the prelude. `key` is a
+    // `&str`, a primitive the language reserves, so `to_string` is the standard library's too.
+    assert!(out.contains("to_string\t(std)"), "{out}");
+    assert!(out.contains("map\t(std)"), "{out}");
 
     // The test calling `new` and `put` is hidden by default.
     let out = call("new", "incoming", false, false).unwrap();
@@ -139,7 +142,7 @@ fn view_callgraph_shows_callees_and_callers_across_files() {
     // Callees, with calls that have no definition marked external.
     let out = calls("a", &|p| p.direction = Some("outgoing".into())).unwrap();
     assert_eq!(
-        out, "a\tsrc/a.rs:1..4\noutgoing:\n  b\tsrc/a.rs:6..8 @2\n  (external: ext)\n",
+        out, "a\tsrc/a.rs:1..4\noutgoing:\n  b\tsrc/a.rs:6..8 @2\n  (external: 1 std)\n",
         "unexpected output: {out}"
     );
 

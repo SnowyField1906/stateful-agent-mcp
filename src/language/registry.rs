@@ -1,26 +1,24 @@
-//! Which languages have code intelligence: the [`Syntax`] of each language in
-//! [`crate::toolchain::LANGUAGES`]. Adding a language's syntax starts here.
+//! Which languages have code intelligence: the [`Syntax`] of each. Registering a language is one
+//! line in [`SYNTAXES`].
 
-use crate::toolchain::{Language, language_for_path};
-
-use super::Syntax;
 use super::python::PythonSyntax;
 use super::rust::RustSyntax;
+use super::{Language, Syntax, language_for_path};
+
+/// The syntax of every supported language, in the order the languages are named in messages.
+static SYNTAXES: &[&dyn Syntax] = &[&RustSyntax, &PythonSyntax];
 
 /// The syntax of `language`; `None` when only its configured tooling is used.
 pub fn of(language: &Language) -> Option<&'static dyn Syntax> {
-    match language.name {
-        "rust" => Some(&RustSyntax),
-        "python" => Some(&PythonSyntax),
-        _ => None,
-    }
+    SYNTAXES
+        .iter()
+        .copied()
+        .find(|syntax| syntax.language().name == language.name)
 }
 
-/// Languages with a Tree-sitter adapter, in the same order as the toolchain catalog.
+/// Languages with a Tree-sitter adapter.
 pub fn supported_languages() -> impl Iterator<Item = &'static Language> {
-    crate::toolchain::LANGUAGES
-        .iter()
-        .filter(|language| of(language).is_some())
+    SYNTAXES.iter().map(|syntax| syntax.language())
 }
 
 /// Names shown in validation errors for language-specific queries.

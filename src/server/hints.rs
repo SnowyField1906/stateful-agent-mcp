@@ -2,7 +2,8 @@
 //! record after several edit batches.
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::toolchain::{Action, language_for_path};
+use crate::language::language_for_path;
+use crate::toolchain::Action;
 use crate::workflow::Project;
 
 /// Edit batches in one turn after which a turn without handover tasks is reminded to record some.

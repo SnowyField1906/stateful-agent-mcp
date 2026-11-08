@@ -10,10 +10,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::common::io::atomic_write;
+use crate::language::language_for_path;
 
 use super::config::LanguageConfig;
 use super::exec::{Captured, quote, run_shell};
-use super::language::language_for_path;
 
 pub const FORMAT_TIMEOUT: Duration = Duration::from_secs(60);
 

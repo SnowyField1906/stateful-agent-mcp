@@ -3,8 +3,8 @@
 //! course never sees one. Each hint fires once per streak and is not repeated while it is ignored.
 
 use crate::filesystem::tools::GrepParams;
-use crate::langtool::engine::syntax::registry;
-use crate::langtool::tools::read_file::UnfocusedRead;
+use crate::langtool::engine::reader::UnfocusedRead;
+use crate::language::registry;
 
 /// Symbol searches by `filesystem_grep` in a row after which `langtool_find_references` is
 /// suggested.

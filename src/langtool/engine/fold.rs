@@ -20,7 +20,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use tree_sitter::Node;
 
-use super::syntax::{Syntax, line_span, parse, registry};
+use crate::language::{Syntax, line_span, parse, registry};
 
 /// Source lines `first..=last` (1-based) shown as one line of output: a single source line
 /// as it is, or several lines folded into a placeholder.

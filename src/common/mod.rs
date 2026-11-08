@@ -3,7 +3,9 @@
 //! and no project state.
 //!
 //! Layers, each depending only on the ones before it:
-//! `common` → `toolchain` → `workflow` → `filesystem` → `langtool` → `server`.
+//! `common` → `language` → `toolchain` → `filesystem` → `langtool` → `workflow` → `server`.
+//! [`Workspace`] is how the scopes below `workflow` reach the registered project without
+//! importing it.
 
 pub mod config;
 pub mod error;
@@ -13,8 +15,10 @@ pub mod params;
 pub mod pathspec;
 pub mod range;
 pub mod text;
+pub mod workspace;
 
 pub use config::{AgentUseMode, ServerConfig};
 pub use error::{AgentError, Result};
 pub use params::{Names, PageParams};
 pub use range::{LineNumber, Range};
+pub use workspace::{Workspace, root_of};

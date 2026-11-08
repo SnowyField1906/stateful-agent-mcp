@@ -6,8 +6,7 @@ use serde::Deserialize;
 use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{mode_of, mtime_of};
 use crate::common::text::{human_size, perms};
-use crate::common::{AgentError, Result};
-use crate::workflow::Project;
+use crate::common::{AgentError, Result, Workspace, root_of};
 
 pub const DESCRIPTION: &str = "Show size, permissions and modification time of a file or directory. For text files also line count, line endings, final newline and the last turn that changed it.";
 
@@ -20,9 +19,9 @@ pub struct FileMetadataParams {
 
 const MAX_SCAN_BYTES: u64 = 16 << 20;
 
-pub fn file_metadata(project: Option<&Project>, p: FileMetadataParams) -> Result<String> {
+pub fn file_metadata(workspace: Option<&dyn Workspace>, p: FileMetadataParams) -> Result<String> {
     let scope = Scope::new(
-        project.map(Project::root_dir),
+        root_of(workspace),
         p.implicit_path.as_deref(),
         "implicit_path",
     )?;
@@ -67,8 +66,8 @@ pub fn file_metadata(project: Option<&Project>, p: FileMetadataParams) -> Result
     }
     if !target.is_root()
         && scope.in_project
-        && let Some(project) = project
-        && let Some(turn) = project.last_turn_touching(&target.rel)
+        && let Some(workspace) = workspace
+        && let Some(turn) = workspace.last_turn_touching(&target.rel)
     {
         out.push(format!("last_changed_in: {turn}"));
     }

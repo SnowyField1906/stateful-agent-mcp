@@ -9,7 +9,9 @@ use std::collections::BTreeSet;
 use tree_sitter::Node;
 
 use super::aliases::{aliases, names_for};
-use super::syntax::{Frame, Lineage, SymbolSelector, Syntax, is_test_scope, node_text, parse};
+use super::scope::{Frame, Lineage};
+use super::selector::SymbolSelector;
+use crate::language::{Ident, Syntax, node_text, parse};
 
 /// How a name is used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -162,11 +164,11 @@ fn collect_names(
     }
     let mut in_test = in_test;
     if let Some(def) = syntax.definition(node, source)
-        && is_test_scope(def.kind, &def.name)
+        && def.test
     {
         in_test = true;
     }
-    if (!in_test || include_tests) && syntax.identifier_kinds().contains(&node.kind()) {
+    if (!in_test || include_tests) && syntax.identifier(node).is_some() {
         out.insert(node_text(node, source).to_string());
     }
     let mut cursor = node.walk();
@@ -193,7 +195,7 @@ fn collect(
     // The lineage inside this node, when it is a definition with a body.
     let mut entered = None;
     if let Some(def) = syntax.definition(node, source) {
-        if is_test_scope(def.kind, &def.name) {
+        if def.test {
             in_test = true;
         }
         if node.child_by_field_name("body").is_some() {
@@ -201,7 +203,7 @@ fn collect(
         }
     }
     let inner = entered.as_ref().unwrap_or(scopes);
-    if syntax.identifier_kinds().contains(&node.kind()) {
+    if syntax.identifier(node).is_some() {
         let text = node_text(node, source);
         if let Some(i) = names.iter().position(|n| n == text) {
             let row = node.start_position().row;
@@ -264,15 +266,15 @@ pub(super) fn role(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> Role {
         }
         cur = parent;
     }
-    match node.kind() {
-        "type_identifier" => Role::Type,
-        "field_identifier" => Role::Field,
+    match syntax.identifier(node) {
+        Some(Ident::Type) => Role::Type,
+        Some(Ident::Field) => Role::Field,
         _ => Role::Use,
     }
 }
 
-/// Whether `node` is the name a definition introduces (`name` field, or `left` for a Python
-/// assignment).
+/// Whether `node` is the name a definition introduces: one of the fields the language names
+/// ([`Declarations::name_fields`](crate::language::Declarations::name_fields)).
 fn is_definition_name(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> bool {
     let Some(parent) = node.parent() else {
         return false;
@@ -280,7 +282,7 @@ fn is_definition_name(node: Node<'_>, syntax: &dyn Syntax, source: &str) -> bool
     if syntax.definition(parent, source).is_none() {
         return false;
     }
-    ["name", "left"].into_iter().any(|field| {
+    syntax.name_fields().iter().any(|&field| {
         parent
             .child_by_field_name(field)
             .is_some_and(|n| n.id() == node.id())

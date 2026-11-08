@@ -6,19 +6,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::common::fs::resolve::{Scope, Target};
 use crate::common::params::Names;
 use crate::common::range::opt_range;
-use crate::common::text::clip;
-use crate::common::{AgentError, Range, Result};
-use crate::langtool::engine::fold::{self, Row};
-use crate::langtool::engine::name_match::ranked_names;
-use crate::langtool::engine::scan::unsupported_message;
-use crate::langtool::engine::symbols::{self, Symbol};
-use crate::langtool::engine::syntax::{SymbolSelector, registry};
-use crate::workflow::Project;
-
-pub use crate::langtool::engine::fold::FoldLevel;
+use crate::common::{AgentError, Range, Result, Workspace};
+use crate::langtool::engine::fold::FoldLevel;
+use crate::langtool::engine::reader::{self, Request, UnfocusedRead};
 
 pub const DESCRIPTION: &str = "Read 1-32 text files in one call; a file that fails is reported in place and the others are still read. Raw lines are numbered `N<tab>text`; the header shows `[first..last of total]` and `next lines=START..` when more remains. `fold_level` gives a structure view instead: registered Tree-sitter code folds by syntax, Markdown and TOML by heading, other text by indentation. Folded content is one row `A..B<tab>text`, where `A..B` are the hidden source lines to read next. Level 0 is an outline: declarations including methods, doc comments cut to their first line. `symbol` reads one definition by name (`Type::name`, `Class.name` or `mod/Type/name` to qualify) with its docs and attributes (Rust, Python). `at_implicit_id` reads the files as of a past turn.";
 
@@ -95,29 +87,12 @@ fn files_list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ReadFileEntry>, D::
         .collect()
 }
 
-/// Lines (or folded rows) shown when the request names no end.
-const DEFAULT_LINES: usize = 400;
-/// Largest explicit window.
-const MAX_LINES: usize = 2000;
-const MAX_FILE_BYTES: u64 = 16 << 20;
-const LINE_CLIP: usize = 500;
+/// Most files one request may name.
 const MAX_FILES: usize = 32;
-/// Definitions shown for one `symbol`.
-const MAX_SYMBOL_HITS: usize = 8;
-
-/// A code file longer than this is worth reading as an outline or by symbol rather than raw.
-const UNFOCUSED_READ_LINES: usize = 150;
-
-/// A raw read of a long code file: the request named no lines, fold level or symbol.
-#[derive(Debug)]
-pub struct UnfocusedRead {
-    pub path: String,
-    pub lines: usize,
-}
 
 /// The text of every file of the request, and the first raw read of a long code file in it.
 pub fn read_file(
-    project: Option<&Project>,
+    workspace: Option<&dyn Workspace>,
     p: ReadFileParams,
 ) -> Result<(String, Option<UnfocusedRead>)> {
     if p.files.is_empty() || p.files.len() > MAX_FILES {
@@ -135,10 +110,18 @@ pub fn read_file(
     let mut errors = Vec::new();
     let mut unfocused = None;
     for file in &p.files {
-        match read_one(project, file, at) {
-            Ok((text, raw)) => {
-                blocks.push(text);
-                unfocused = unfocused.or(raw);
+        let request = Request {
+            path: &file.file_path,
+            lines: file.lines,
+            numbered: file.numbered.unwrap_or(true),
+            fold_level: file.fold_level,
+            symbols: file.symbol.as_ref().map(Names::cleaned),
+            at,
+        };
+        match reader::read(workspace, &request) {
+            Ok(read) => {
+                blocks.push(read.text);
+                unfocused = unfocused.or(read.unfocused);
             }
             Err(err) => {
                 blocks.push(format!("{}: error: {err}\n", file.file_path.trim()));
@@ -153,316 +136,4 @@ pub fn read_file(
         });
     }
     Ok((blocks.join("\n"), unfocused))
-}
-
-fn read_one(
-    project: Option<&Project>,
-    req: &ReadFileEntry,
-    at: Option<&str>,
-) -> Result<(String, Option<UnfocusedRead>)> {
-    let path = req.file_path.trim();
-    if path.is_empty() {
-        return Err(AgentError::invalid("file_path", "must not be empty"));
-    }
-    let scope = Scope::new(project.map(Project::root_dir), Some(path), "file_path")?;
-    let target = &scope.target;
-    if target.is_root() {
-        return Err(AgentError::invalid("file_path", "must be a file"));
-    }
-    let text = match at {
-        Some(id) => {
-            let project = project.filter(|_| scope.in_project).ok_or_else(|| {
-                AgentError::invalid(
-                    "at_implicit_id",
-                    "applies to project paths; it cannot be combined with paths outside the registered project",
-                )
-            })?;
-            project.read_at(id, &target.rel)?.ok_or_else(|| {
-                AgentError::NotFound(format!("{} did not exist at {id}", target.rel))
-            })?
-        }
-        None => read_text(target)?,
-    };
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return Ok((format!("{} (empty)\n", target.shown()), None));
-    }
-    let symbols = req
-        .symbol
-        .as_ref()
-        .map(Names::cleaned)
-        .filter(|s| !s.is_empty());
-    if symbols.is_some() && req.lines.is_some() {
-        return Err(AgentError::invalid(
-            "symbol",
-            "cannot be combined with `lines`; the symbol selects the lines",
-        ));
-    }
-    let view = View::new(target.shown(), &text, &lines, at, req);
-    let unfocused = (symbols.is_none()
-        && req.lines.is_none()
-        && req.fold_level.is_none()
-        && at.is_none()
-        && lines.len() > UNFOCUSED_READ_LINES
-        && registry::for_path(view.path).is_some())
-    .then(|| UnfocusedRead {
-        path: view.path.to_string(),
-        lines: lines.len(),
-    });
-    let out = match symbols {
-        Some(names) => read_symbols(&view, &names)?,
-        None => view.render(&window(req.lines, lines.len(), view.path)?, None),
-    };
-    Ok((out, unfocused))
-}
-
-/// The source lines a request selects, and how many lines or rows may be shown of them.
-struct Window {
-    /// Zero-based first line.
-    start: usize,
-    /// Zero-based end, exclusive.
-    end: usize,
-    cap: usize,
-}
-
-fn window(range: Option<Range>, total: usize, path: &str) -> Result<Window> {
-    let Some(range) = range else {
-        return Ok(Window {
-            start: 0,
-            end: total,
-            cap: DEFAULT_LINES,
-        });
-    };
-    if let Some(n) = range.tail() {
-        let n = (n as usize).clamp(1, MAX_LINES);
-        return Ok(Window {
-            start: total.saturating_sub(n),
-            end: total,
-            cap: n,
-        });
-    }
-    let (start, len) = range.forward(DEFAULT_LINES as u64, MAX_LINES as u64, "lines")?;
-    if start >= total {
-        return Err(AgentError::invalid(
-            "lines",
-            format!("{path} has {total} lines"),
-        ));
-    }
-    Ok(match range.end {
-        Some(_) => Window {
-            start,
-            end: (start + len).min(total),
-            cap: len,
-        },
-        None => Window {
-            start,
-            end: total,
-            cap: DEFAULT_LINES,
-        },
-    })
-}
-
-/// One file, read as raw lines or as folded rows.
-struct View<'a> {
-    path: &'a str,
-    text: &'a str,
-    lines: &'a [&'a str],
-    at: Option<&'a str>,
-    numbered: bool,
-    crlf: bool,
-    /// Rows of the whole file with the mode and level that produced them.
-    folded: Option<(fold::Mode, FoldLevel, Vec<Row>)>,
-}
-
-impl<'a> View<'a> {
-    fn new(
-        path: &'a str,
-        text: &'a str,
-        lines: &'a [&'a str],
-        at: Option<&'a str>,
-        req: &ReadFileEntry,
-    ) -> Self {
-        let folded = req.fold_level.map(|lvl| {
-            let level = lvl.as_usize();
-            let (mode, rows) = fold::fold_file(path, text, level);
-            (mode, lvl, rows)
-        });
-        View {
-            path,
-            text,
-            lines,
-            at,
-            numbered: req.numbered.unwrap_or(true),
-            crlf: text.contains("\r\n"),
-            folded,
-        }
-    }
-
-    /// The lines or rows of `w` under a header; `label` names the definition of a symbol read.
-    fn render(&self, w: &Window, label: Option<&str>) -> String {
-        let total = self.lines.len();
-        let mut body = String::new();
-        let (first, shown_end) = match &self.folded {
-            None => {
-                let end = w.end.min(w.start + w.cap);
-                for (i, line) in self.lines[w.start..end].iter().enumerate() {
-                    self.push_line(&mut body, &(w.start + i + 1).to_string(), line);
-                }
-                (w.start + 1, end)
-            }
-            Some((_, _, rows)) => {
-                let shown: Vec<&Row> = rows
-                    .iter()
-                    .filter(|r| r.last > w.start && r.first <= w.end)
-                    .take(w.cap)
-                    .collect();
-                for row in &shown {
-                    self.push_line(&mut body, &row.locator(), &row.text);
-                }
-                (
-                    shown.first().map_or(w.start + 1, |r| r.first),
-                    shown.last().map_or(w.start, |r| r.last),
-                )
-            }
-        };
-        let mut out = format!("{} [{first}..{shown_end} of {total}]", self.path);
-        if let Some((mode, level, _)) = &self.folded {
-            out.push_str(&format!(" fold_level {level} {}", mode.label()));
-        }
-        if let Some(label) = label {
-            out.push(' ');
-            out.push_str(label);
-        }
-        if self.crlf {
-            out.push_str(" crlf");
-        }
-        if let Some(id) = self.at {
-            out.push_str(&format!(" @{id}"));
-        }
-        if shown_end < w.end {
-            let next = Range {
-                start: shown_end as i64 + 1,
-                end: None,
-            };
-            out.push_str(&format!(" next lines={next}"));
-        }
-        out.push('\n');
-        out.push_str(&body);
-        out
-    }
-
-    fn push_line(&self, out: &mut String, locator: &str, text: &str) {
-        if self.numbered {
-            out.push_str(locator);
-            out.push('\t');
-        }
-        out.push_str(&clip(text, LINE_CLIP));
-        out.push('\n');
-    }
-}
-
-/// The definitions named in `names` (`name`, `Type::name`, `Class.name`) with their doc comments,
-/// attributes and decorators, rendered in source order.
-fn read_symbols(view: &View<'_>, names: &[&str]) -> Result<String> {
-    let syntax = registry::for_path(view.path)
-        .ok_or_else(|| AgentError::invalid("symbol", unsupported_message()))?;
-    let all = symbols::symbols(syntax, view.text)
-        .ok_or_else(|| AgentError::invalid("file_path", "could not be parsed"))?;
-
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out_blocks = Vec::new();
-    for &name in names {
-        let selector = SymbolSelector::parse(name);
-        let base = selector.name;
-        let hits: Vec<&Symbol> = all
-            .iter()
-            .filter(|s| s.name == base && selector.matches_scope(&s.scope))
-            .collect();
-        if hits.is_empty() {
-            return Err(AgentError::NotFound(no_symbol(
-                &all, view.path, name, &selector,
-            )));
-        }
-        for hit in hits.iter().take(MAX_SYMBOL_HITS) {
-            if !seen.insert((hit.first, hit.last)) {
-                continue;
-            }
-            let w = Window {
-                start: hit.first - 1,
-                end: hit.last,
-                cap: MAX_LINES,
-            };
-            let scope = if hit.scope.is_empty() {
-                String::new()
-            } else {
-                format!(" (in {})", hit.scope)
-            };
-            out_blocks.push((
-                hit.first,
-                view.render(&w, Some(&format!("{} {}{scope}", hit.kind, hit.name))),
-            ));
-        }
-        if hits.len() > MAX_SYMBOL_HITS {
-            out_blocks.push((
-                usize::MAX,
-                format!(
-                    "[{} more definitions named `{base}`; qualify the name as `Type::{base}`]\n",
-                    hits.len() - MAX_SYMBOL_HITS
-                ),
-            ));
-        }
-    }
-    out_blocks.sort_by_key(|(first, _)| *first);
-    let out = out_blocks
-        .into_iter()
-        .map(|(_, block)| block)
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(out)
-}
-
-fn no_symbol(all: &[Symbol], path: &str, name: &str, selector: &SymbolSelector<'_>) -> String {
-    let near = ranked_names(
-        all.iter()
-            .filter(|symbol| selector.matches_scope(&symbol.scope))
-            .map(|symbol| symbol.name.clone()),
-        selector.name,
-        5,
-        true,
-    );
-    let mut message = format!("no definition `{name}` in {path}");
-    if !near.is_empty() {
-        let near = near
-            .into_iter()
-            .map(|(_, name)| name)
-            .collect::<Vec<_>>()
-            .join(", ");
-        message.push_str(&format!("; similar names: {near}"));
-    }
-    message
-}
-
-fn read_text(target: &Target) -> Result<String> {
-    let meta = std::fs::metadata(&target.abs).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => AgentError::PathNotFound(target.shown().to_string()),
-        _ => AgentError::io_at(&target.abs, e),
-    })?;
-    if meta.is_dir() {
-        return Err(AgentError::invalid(
-            &target.rel,
-            "is a directory; use filesystem_ls",
-        ));
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(AgentError::invalid(
-            &target.rel,
-            format!(
-                "{} bytes; files over {MAX_FILE_BYTES} bytes are not read",
-                meta.len()
-            ),
-        ));
-    }
-    let bytes = std::fs::read(&target.abs).map_err(|e| AgentError::io_at(&target.abs, e))?;
-    String::from_utf8(bytes)
-        .map_err(|_| AgentError::invalid(&target.rel, "not valid UTF-8 text (binary file?)"))
 }

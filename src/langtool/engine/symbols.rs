@@ -6,14 +6,18 @@
 use tree_sitter::Node;
 
 use super::name_match::ranked_names;
-use super::syntax::{Frame, Lineage, SymbolSelector, Syntax, header, parse, unit_span};
+use super::scope::{Frame, Lineage};
+use super::selector::SymbolSelector;
+use crate::language::{Kind, Syntax, header, parse, unit_span};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Symbol {
-    pub kind: &'static str,
+    pub kind: &'static Kind,
     pub name: String,
     /// For an `impl Trait for Type` block, the trait (`name` is then the type).
     pub trait_name: Option<String>,
+    /// Whether the body of the definition is test code.
+    pub test: bool,
     /// The enclosing definitions, outermost first; shown as a qualified path (`east::Token`).
     /// Empty at the top level.
     pub scope: Lineage,
@@ -39,6 +43,7 @@ impl Symbol {
             kind: self.kind,
             name: self.name.clone(),
             trait_name: self.trait_name.clone(),
+            test: self.test,
         }
     }
 }
@@ -70,15 +75,14 @@ pub fn matches(symbol: &Symbol, query: Option<&str>, kind: Option<&str>) -> bool
         if name_matches {
             return true;
         }
-        if symbol.kind == "impl"
-            && let Some(tr) = &symbol.trait_name
+        if let Some(tr) = &symbol.trait_name
             && tr.to_lowercase().contains(&selector.name.to_lowercase())
             && selector.matches_scope(&symbol.scope)
         {
             return true;
         }
         false
-    }) && kind.is_none_or(|k| symbol.kind.eq_ignore_ascii_case(k))
+    }) && kind.is_none_or(|k| symbol.kind.is_named(k))
 }
 
 /// The one definition that `raw` (`name`, `Type::name`, ...) names in `symbols`, or why there is
@@ -236,6 +240,7 @@ fn walk(
             kind: def.kind,
             name: def.name.clone(),
             trait_name: def.trait_name.clone(),
+            test: def.test,
             scope: scope.clone(),
             first,
             last,

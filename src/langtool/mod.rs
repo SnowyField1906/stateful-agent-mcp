@@ -3,10 +3,10 @@
 //!
 //! - `tools/`: one file per `langtool_*` tool, holding its parameters and handler.
 //! - `engine/`: the scan and the Tree-sitter analysis behind the code intelligence tools; a
-//!   language plugs in through [`Syntax`]. The configured commands live in [`crate::toolchain`].
+//!   language plugs in through [`crate::language::Syntax`]. The configured commands live in
+//!   [`crate::toolchain`].
 
 pub mod engine;
 pub mod tools;
 
-pub use engine::Syntax;
 pub use engine::fold::FoldLevel;

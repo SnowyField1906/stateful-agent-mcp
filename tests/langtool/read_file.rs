@@ -100,7 +100,7 @@ fn read_file_isolates_errors_reads_symbols_and_pages_folds_by_rows() {
     let mut item = req("big.txt");
     item.symbol = Some("nope".into());
     let err = read(vec![item]).unwrap_err().to_string();
-    let supported = agent_mcp::langtool::engine::syntax::registry::supported_file_types();
+    let supported = agent_mcp::language::registry::supported_file_types();
     assert!(err.contains(&format!("supported: {supported}")), "{err}");
 
     let mut item = req("a.rs");

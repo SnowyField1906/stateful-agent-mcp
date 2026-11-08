@@ -10,6 +10,6 @@ pub mod view_callgraph;
 
 pub use find_references::FindReferencesParams;
 pub use find_symbols::FindSymbolsParams;
-pub use read_file::{FoldLevel, ReadFileEntry, ReadFileParams};
+pub use read_file::{ReadFileEntry, ReadFileParams};
 pub use run_action::RunActionParams;
 pub use view_callgraph::ViewCallgraphParams;

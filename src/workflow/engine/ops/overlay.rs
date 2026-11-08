@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::common::io::atomic_write;
-use crate::common::pathspec::is_protected_name;
+use crate::common::pathspec::{ignores_case, is_protected_name};
 use crate::common::{AgentError, Result};
 
 const MAX_DIR_FILES: usize = 10_000;
@@ -22,6 +22,8 @@ pub struct Entry {
 pub struct Overlay {
     root: PathBuf,
     entries: BTreeMap<String, Entry>,
+    /// Whether the disk finds a name whatever its case.
+    ignores_case: bool,
 }
 
 /// Read a text file; `None` when it does not exist. Non-UTF-8 content is an error because
@@ -47,9 +49,47 @@ pub fn read_text_opt(root: &Path, rel: &str) -> Result<Option<String>> {
 impl Overlay {
     pub fn new(root: PathBuf) -> Self {
         Self {
+            ignores_case: ignores_case(&root),
             root,
             entries: BTreeMap::new(),
         }
+    }
+
+    /// `rel` spelled like the files that this batch already holds, on a disk that ignores case.
+    /// A file that is not on disk yet cannot be respelled from its folder, so `ZZ/MIXED.TXT` after
+    /// a `Create` of `zz/Mixed.txt` would be a second key for the same file. With `last_too` false
+    /// the last name is left as written, for the destination of a move.
+    pub fn spell_like_pending(&self, rel: &str, last_too: bool) -> String {
+        if !self.ignores_case {
+            return rel.to_string();
+        }
+        let parts: Vec<&str> = rel.split('/').collect();
+        let limit = if last_too {
+            parts.len()
+        } else {
+            parts.len() - 1
+        };
+        let mut best: Option<(usize, &str)> = None;
+        for (key, entry) in &self.entries {
+            if entry.current.is_none() {
+                continue;
+            }
+            let same = key
+                .split('/')
+                .zip(&parts)
+                .take(limit)
+                .take_while(|(held, typed)| held.to_lowercase() == typed.to_lowercase())
+                .count();
+            if same > best.map_or(0, |(n, _)| n) {
+                best = Some((same, key));
+            }
+        }
+        let Some((same, key)) = best else {
+            return rel.to_string();
+        };
+        let mut spelled: Vec<&str> = key.split('/').take(same).collect();
+        spelled.extend(&parts[same..]);
+        spelled.join("/")
     }
 
     /// Disk path for `rel`, rejecting symlinks anywhere along it.

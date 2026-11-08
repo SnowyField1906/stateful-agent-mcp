@@ -5,7 +5,9 @@
 
 use tree_sitter::Node;
 
-use super::{node_text, path_segment};
+use crate::language::node_text;
+
+use super::nodes::{path_segment, type_path_name};
 
 /// What is known about the type of the receiver of a method call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,9 +190,17 @@ fn pattern_binds(pattern: Node<'_>, name: &str, source: &str) -> bool {
         "identifier" | "shorthand_field_identifier" => return node_text(pattern, source) == name,
         _ => {}
     }
+    // The guard of a match arm (`None if root.starts_with(..)`) is a child of its `match_pattern`
+    // but only uses names; it binds none.
+    let guard = if pattern.kind() == "match_pattern" {
+        pattern.child_by_field_name("condition")
+    } else {
+        None
+    };
     let mut cursor = pattern.walk();
     pattern
         .named_children(&mut cursor)
+        .filter(|child| guard.is_none_or(|guard| guard.id() != child.id()))
         .any(|child| pattern_binds(child, name, source))
 }
 
@@ -236,23 +246,16 @@ fn type_name(node: Node<'_>, source: &str) -> Option<Receiver> {
             }
         }
         "reference_type" | "pointer_type" => type_name(node.child_by_field_name("type")?, source),
+        // `str`, `bool`, `u8`: names the language reserves, so the standard library's.
+        "primitive_type" => Some(Receiver::Type(node_text(node, source).to_string())),
+        // `[T]` and `[T; N]` have no name of their own. A name no type can have keeps the
+        // receiver typed, and the project's only methods on it are those of a trait it implements.
+        "array_type" => Some(Receiver::Type("[]".to_string())),
         "dynamic_type" | "abstract_type" => {
             trait_name(node.child_by_field_name("trait")?, source).map(Receiver::Trait)
         }
         // `dyn Trait + Send`: the first bound that names a type.
         "bounded_type" => first_type(node, source),
-        _ => None,
-    }
-}
-
-/// The name a path to a type ends in: `Store` for `Store`, `store::Store` and `Store<T>`.
-pub(super) fn type_path_name(node: Node<'_>, source: &str) -> Option<String> {
-    match node.kind() {
-        "type_identifier" => Some(node_text(node, source).to_string()),
-        "scoped_type_identifier" => {
-            Some(node_text(node.child_by_field_name("name")?, source).to_string())
-        }
-        "generic_type" => type_path_name(node.child_by_field_name("type")?, source),
         _ => None,
     }
 }

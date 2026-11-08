@@ -246,8 +246,9 @@ fn find_references_from_symbol_lists_what_a_definition_uses() {
         out.contains("  use\tStore\t@4\t") && out.contains("src/store.rs:1 struct Store"),
         "{out}"
     );
-    // A call that nothing defines is external; locals are not listed at all.
-    assert!(out.contains("  external\tmissing_call\n"), "{out}");
+    // A call that nothing defines is placed by the imports of its file, here the prelude or the
+    // builtins; locals are not listed at all.
+    assert!(out.contains("  external\t1 std\n"), "{out}");
     assert!(
         !out.contains("\ttotal\t") && !out.contains("\ts\t"),
         "{out}"
@@ -281,4 +282,38 @@ fn find_references_from_symbol_lists_what_a_definition_uses() {
     assert!(err.to_string().contains("not both"), "{err}");
     let only: FindReferencesParams = serde_json::from_str(r#"{"from_symbol": "go"}"#).unwrap();
     assert_eq!(only.from_symbol.unwrap().cleaned(), ["go"]);
+}
+
+#[test]
+fn find_references_from_symbol_places_external_names_by_where_they_come_from() {
+    let tmp = TempProject::new("code-references-external");
+    tmp.write(
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde_json = \"1\"\n",
+    );
+    tmp.write(
+        "src/lib.rs",
+        concat!(
+            "use serde_json::from_str;\n",
+            "pub fn run() {\n",
+            "    from_str(\"1\");\n",
+            "    serde_json::to_string(&1);\n",
+            "    std::fs::read(\"a\");\n",
+            "    drop(1);\n",
+            "    value.frob();\n",
+            "}\n",
+        ),
+    );
+    let out = State::new(ServerConfig::default())
+        .langtool_find_references(FindReferencesParams {
+            from_symbol: Some(vec!["run".to_string()].into()),
+            implicit_path: Some(tmp.path_str()),
+            ..Default::default()
+        })
+        .unwrap();
+    // `to_string` is placed by the crate it is written with, not taken for a std method.
+    assert!(
+        out.contains("  external\t2 std, 1 unresolved; deps: serde_json\n"),
+        "{out}"
+    );
 }

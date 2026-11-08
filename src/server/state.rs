@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde_json::{Value, json};
 
-use crate::common::{AgentError, Result, ServerConfig};
+use crate::common::{AgentError, Result, ServerConfig, Workspace};
 use crate::server::hints::ValidationHints;
 use crate::server::steering::ToolUseHints;
 use crate::toolchain::Action;
@@ -54,14 +54,14 @@ impl State {
         op(slot.as_mut().ok_or(AgentError::ProjectNotRegistered)?)
     }
 
-    /// Run `op` with the registered project, if any. Read-only tools accept absolute paths
-    /// without one.
-    pub(crate) fn with_optional_project<T>(
+    /// Run `op` with the registered project as a [`Workspace`], if any. Read-only tools accept
+    /// absolute paths without one.
+    pub(crate) fn with_workspace<T>(
         &self,
-        op: impl FnOnce(Option<&Project>) -> Result<T>,
+        op: impl FnOnce(Option<&dyn Workspace>) -> Result<T>,
     ) -> Result<T> {
         let slot = self.slot();
-        op(slot.as_ref())
+        op(slot.as_ref().map(|project| project as &dyn Workspace))
     }
 
     /// Forget what the hints have seen: a newly registered project starts a fresh session.

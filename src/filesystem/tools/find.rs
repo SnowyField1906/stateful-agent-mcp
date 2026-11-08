@@ -7,9 +7,8 @@ use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, SortBy};
 use crate::common::params::{PageParams, opt_string_or_vec};
 use crate::common::range::{Range, opt_range};
-use crate::common::{Result, ServerConfig};
+use crate::common::{Result, ServerConfig, Workspace, root_of};
 use crate::filesystem::engine::listing::{ListSpec, list};
-use crate::workflow::Project;
 
 pub const DESCRIPTION: &str = "Find files by `glob` (gitignore syntax: `*.rs` matches at any depth, `src/**/*.ts` is anchored), `kind`, `size` and `sort_by`. Respects `.gitignore`.";
 
@@ -41,12 +40,12 @@ pub struct FindParams {
     pub page: PageParams,
 }
 
-pub fn find(project: Option<&Project>, cfg: &ServerConfig, p: FindParams) -> Result<String> {
-    let scope = Scope::new(
-        project.map(Project::root_dir),
-        p.folder_path.as_deref(),
-        "folder_path",
-    )?;
+pub fn find(
+    workspace: Option<&dyn Workspace>,
+    cfg: &ServerConfig,
+    p: FindParams,
+) -> Result<String> {
+    let scope = Scope::new(root_of(workspace), p.folder_path.as_deref(), "folder_path")?;
     let kind = p.kind.unwrap_or(Kind::File);
     list(
         &scope,

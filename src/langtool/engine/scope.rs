@@ -6,63 +6,63 @@
 
 use std::fmt;
 
-use super::spec::Definition;
+use crate::language::{Definition, Kind};
 
 /// A definition that encloses other code: `mod east`, `impl Token<'a>`, `class A`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
-    pub kind: &'static str,
+    pub kind: &'static Kind,
     pub name: String,
     /// The trait an `impl` block implements: `Syntax` for `impl Syntax for Token`.
     pub trait_name: Option<String>,
+    /// Whether the body of the definition is test code.
+    pub test: bool,
 }
 
 impl Frame {
-    pub fn new(kind: &'static str, name: &str) -> Self {
-        Self {
-            kind,
-            name: name.to_string(),
-            trait_name: None,
-        }
-    }
-
     /// The frame that the definition `def` opens.
     pub fn of(def: &Definition) -> Self {
         Self {
             kind: def.kind,
             name: def.name.clone(),
             trait_name: def.trait_name.clone(),
+            test: def.test,
         }
     }
 
     /// Whether a method in this frame can be called through a receiver typed as the trait
     /// `name`: the trait itself and every `impl` of it.
     pub fn implements(&self, name: &str) -> bool {
-        (self.kind == "trait" && self.bare_name() == name)
+        (self.kind.interface && self.bare_name() == name)
             || self.trait_name.as_deref() == Some(name)
     }
 
     /// The name without generic parameters: `Token` for `Token<'a>`.
     pub fn bare_name(&self) -> &str {
-        self.name.split('<').next().unwrap_or(&self.name).trim()
+        bare_name(&self.name)
     }
 
     /// Whether the frame is a type or trait whose body holds methods.
     pub fn is_owner(&self) -> bool {
-        matches!(self.kind, "impl" | "trait" | "class")
+        self.kind.owner
     }
 
-    /// Whether the frame holds test code: `mod tests`, `mod test` or a `Test*` class.
+    /// Whether the frame holds test code.
     pub fn is_test(&self) -> bool {
-        is_test_scope(self.kind, &self.name)
+        self.test
     }
 }
 
-/// Whether a definition of `kind` named `name` holds test code: `mod tests`, `mod test` or a
-/// `Test*` class.
-pub fn is_test_scope(kind: &str, name: &str) -> bool {
-    (kind == "mod" && matches!(name, "tests" | "test"))
-        || (kind == "class" && name.starts_with("Test"))
+/// `name` without generic arguments: `Token` for `Token<'a>`.
+pub fn bare_name(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name).trim()
+}
+
+/// The text that a `scope` parameter filters by, trimmed and lower-cased; `None` when blank.
+pub fn scope_filter(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(str::to_lowercase)
 }
 
 /// The enclosing definitions of a position, outermost first. Empty at the top level.

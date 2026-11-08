@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::common::{AgentError, AgentUseMode, Result};
+use crate::common::pathspec::AGENTS_DIR;
+use crate::common::{AgentError, AgentUseMode, Result, Workspace};
 use crate::toolchain::LanguageConfig;
 
 use super::instructions as text;
@@ -63,7 +64,7 @@ impl Project {
     /// reused when it has recorded nothing.
     pub fn open(path: &str) -> Result<Self> {
         let root = Self::canonical_root(path)?;
-        let agents_dir = root.join(".AGENTS");
+        let agents_dir = root.join(AGENTS_DIR);
         let sessions_dir = agents_dir.join("sessions");
         let deleted_dir = agents_dir.join(".deleted");
         let known_dir = agents_dir.join(".known");
@@ -298,9 +299,29 @@ impl Project {
         Ok(text)
     }
 
-    /// Content of `path` at the end of the turn(s) selected by `id` (a turn, session, `HEAD~N`
-    /// or update ID).
-    pub(crate) fn read_at(&self, id: &str, path: &str) -> Result<Option<String>> {
+    /// Language tooling from `.AGENTS/config.toml`, read on every call so edits apply at once.
+    pub fn language_config(&self) -> Result<LanguageConfig> {
+        LanguageConfig::load(&self.agents_dir)
+    }
+}
+
+impl Workspace for Project {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn last_turn_touching(&self, rel: &str) -> Option<String> {
+        self.flat_keys()
+            .into_iter()
+            .rev()
+            .find(|key| {
+                self.turn(*key)
+                    .is_some_and(|turn| turn.updates.iter().any(|op| op.touches_path(rel)))
+            })
+            .map(|key| key.to_string())
+    }
+
+    fn read_at(&self, id: &str, rel: &str) -> Result<Option<String>> {
         let flat = self.flat_keys();
         let idx = match self.parse_selector(&flat, id)? {
             Sel::Turns { hi, .. } => hi,
@@ -315,25 +336,7 @@ impl Project {
                 ));
             }
         };
-        self.content_before(&flat, idx + 1, path)
-    }
-
-    /// The most recent turn that changed `path`.
-    pub(crate) fn last_turn_touching(&self, path: &str) -> Option<TurnKey> {
-        self.flat_keys().into_iter().rev().find(|k| {
-            self.turn(*k)
-                .is_some_and(|t| t.updates.iter().any(|op| op.touches_path(path)))
-        })
-    }
-
-    /// The project's root directory.
-    pub fn root_dir(&self) -> &Path {
-        &self.root
-    }
-
-    /// Language tooling from `.AGENTS/config.toml`, read on every call so edits apply at once.
-    pub fn language_config(&self) -> Result<LanguageConfig> {
-        LanguageConfig::load(&self.agents_dir)
+        self.content_before(&flat, idx + 1, rel)
     }
 }
 

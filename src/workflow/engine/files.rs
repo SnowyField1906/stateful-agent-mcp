@@ -13,9 +13,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::common::pathspec::{matches_pathspec, normalize_rel};
+use crate::common::pathspec::{matches_pathspec, normalize_dest, normalize_rel};
 use crate::common::{AgentError, Result};
-use crate::langtool::engine::syntax::registry;
+use crate::language::registry;
 use crate::toolchain::format::{FormatReport, format_paths};
 
 use super::Project;
@@ -77,7 +77,7 @@ impl Project {
         let mut tracker = BatchTracker::default();
         let mut updates = Vec::with_capacity(ops.len());
         for (i, raw) in ops.iter().enumerate() {
-            let applied = normalize_op(raw, &self.root)
+            let applied = normalize_op(raw, &self.root, &overlay)
                 .and_then(|op| self.apply_op(&mut overlay, &mut tracker, &flat, &op));
             updates.push(applied.map_err(|e| in_op(i, e))?);
         }
@@ -420,9 +420,11 @@ fn syntax_warnings(ov: &Overlay, suspects: Vec<(String, String)>) -> Vec<String>
         .collect()
 }
 
-/// Validate and normalize every path of `op`.
-fn normalize_op(op: &FileOp, root: &Path) -> Result<FileOp> {
-    let norm = |p: &str| normalize_rel(p, root);
+/// Validate and normalize every path of `op`: spelled as the disk stores it, or else as the files
+/// that earlier operations of the batch created.
+fn normalize_op(op: &FileOp, root: &Path, overlay: &Overlay) -> Result<FileOp> {
+    let norm = |p: &str| normalize_rel(p, root).map(|n| overlay.spell_like_pending(&n, true));
+    let dest = |p: &str| normalize_dest(p, root).map(|n| overlay.spell_like_pending(&n, false));
     Ok(match op {
         FileOp::Create { path, content } => FileOp::Create {
             path: norm(path)?,
@@ -474,7 +476,7 @@ fn normalize_op(op: &FileOp, root: &Path) -> Result<FileOp> {
         },
         FileOp::Move { path, to_path } => FileOp::Move {
             path: norm(path)?,
-            to_path: norm(to_path)?,
+            to_path: dest(to_path)?,
         },
         FileOp::Recover { id, to_path } => FileOp::Recover {
             id: id.trim().to_string(),

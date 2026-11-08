@@ -68,7 +68,7 @@ fn symbols_show_whole_signatures_and_validate_kinds() {
         .unwrap_err();
     let message = err.to_string();
     assert!(message.contains("unsupported language `go`"), "{message}");
-    let supported = agent_mcp::langtool::engine::syntax::registry::supported_names();
+    let supported = agent_mcp::language::registry::supported_names();
     assert!(
         message.contains(&format!("supported: {supported}")),
         "{message}"

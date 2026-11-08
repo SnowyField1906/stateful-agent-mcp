@@ -7,7 +7,7 @@
 
 use crate::common::LineNumber;
 use crate::langtool::engine::symbols::{self, Symbol};
-use crate::langtool::engine::syntax::{Syntax, parse, registry};
+use crate::language::{Syntax, parse, registry};
 
 use super::PatchHunk;
 use super::patch::byte_offset_of_line;

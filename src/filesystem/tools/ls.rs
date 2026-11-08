@@ -7,9 +7,8 @@ use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, SortBy};
 use crate::common::params::{PageParams, opt_string_or_vec};
 use crate::common::range::{Range, opt_range};
-use crate::common::{Result, ServerConfig};
+use crate::common::{Result, ServerConfig, Workspace, root_of};
 use crate::filesystem::engine::listing::{ListSpec, list};
-use crate::workflow::Project;
 
 pub const DESCRIPTION: &str = "List a directory with sizes, directories first. Respects `.gitignore`; dotfiles are hidden unless `show_gitignored`.";
 
@@ -46,12 +45,8 @@ pub struct LsParams {
     pub page: PageParams,
 }
 
-pub fn ls(project: Option<&Project>, cfg: &ServerConfig, p: LsParams) -> Result<String> {
-    let scope = Scope::new(
-        project.map(Project::root_dir),
-        p.folder_path.as_deref(),
-        "folder_path",
-    )?;
+pub fn ls(workspace: Option<&dyn Workspace>, cfg: &ServerConfig, p: LsParams) -> Result<String> {
+    let scope = Scope::new(root_of(workspace), p.folder_path.as_deref(), "folder_path")?;
     let recursive = p.recursive.unwrap_or(false);
     let spec = ListSpec {
         depth: if recursive {

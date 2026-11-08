@@ -4,14 +4,11 @@
 
 use std::path::Path;
 
-use super::Syntax;
-use super::syntax::registry;
 use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, WalkOpts, read_searchable, walk};
 use crate::common::text::more_footer;
-use crate::common::{AgentError, PageParams, Result, ServerConfig};
-use crate::toolchain::{Language, language_for_path};
-use crate::workflow::Project;
+use crate::common::{AgentError, PageParams, Result, ServerConfig, Workspace, root_of};
+use crate::language::{Language, Syntax, language_for_path, registry};
 
 /// Error text for a file whose language has no code intelligence.
 pub fn unsupported_message() -> String {
@@ -40,11 +37,11 @@ pub struct Scan<T> {
 /// be parsed; files without
 /// items are left out of the result.
 pub fn scan<T>(
-    project: Option<&Project>,
+    workspace: Option<&dyn Workspace>,
     target: &ScanTarget<'_>,
     mut index: impl FnMut(&'static Language, &'static dyn Syntax, &str, &str) -> Option<Vec<T>>,
 ) -> Result<Scan<T>> {
-    let scope = Scope::new(project.map(Project::root_dir), target.path, "implicit_path")?;
+    let scope = Scope::new(root_of(workspace), target.path, "implicit_path")?;
     let dest = &scope.target;
     let meta = std::fs::symlink_metadata(&dest.abs)
         .map_err(|_| AgentError::PathNotFound(dest.shown().to_string()))?;

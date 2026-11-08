@@ -4,55 +4,28 @@
 //! `Self::new()` and `self.run()` stay in the caller's type, `Type::new()` goes to that type,
 //! `module::run()` goes to free functions of that module, and `run()` goes to free functions.
 //! Rust `value.run()` calls use an inferred receiver type when available; unknown receivers
-//! remain possible method targets marked with `?`. A receiver typed `&dyn Trait` or
+//! remain possible method targets marked with `?`, unless the same name is called elsewhere on a
+//! receiver that is known to be standard library or a dependency. A receiver typed as something
+//! the standard library or a dependency owns (`Vec<_>`, `&str`) has no target but the methods the
+//! project itself implements for that type. A receiver typed `&dyn Trait` or
 //! `impl Trait` reaches the declaration of the trait and every `impl Trait for T`, also marked `?`. Every edge ends with `@line`, the lines of
-//! the calling function that make the call. Only the [`Syntax`] trait is used; walking
-//! directories, reading files and paginating results belong to the tool handler.
+//! the calling function that make the call. A call with no definition in the index is placed by
+//! [`origins`](super::origins): standard library, dependency or other project code, from the
+//! imports of its file and not from a list of names. The functions it links are those of the
+//! [`index`](super::index); walking directories, reading files and paginating results belong to
+//! [`scan`](super::scan) and [`calltree`](super::calltree).
 
 use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tree_sitter::Node;
 
-use super::aliases::{aliases as file_aliases, resolve};
+use super::index::{Call, Entry, in_module, is_test, names_a_type};
 use super::name_match::ranked_names;
-use super::syntax::{
-    Alias, CallKind, CallSite, Frame, Lineage, SymbolSelector, Syntax, parse, unit_span,
-};
+use super::origins::{Origins, Outside, origin_label};
+use super::selector::SymbolSelector;
 use crate::common::{AgentError, Result};
-
-/// A function or method definition and the calls it makes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FnInfo {
-    pub name: String,
-    /// The enclosing definitions, outermost first; shown as a qualified path (`east::Token`).
-    /// Empty at the top level.
-    pub scope: Lineage,
-    /// 1-based first and last line, including the doc comments, attributes and decorators
-    /// written directly above the definition.
-    pub first: usize,
-    pub last: usize,
-    /// Distinct calls in the body, in source order, each with the lines it is made on. A call
-    /// inside a nested function belongs to the nested function only. Names are the originals
-    /// behind import aliases (`use a::b as c; c()` calls `b`).
-    pub calls: Vec<Call>,
-}
-
-/// A distinct call in a function body and where it is made.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Call {
-    pub site: CallSite,
-    /// 1-based lines the call is made on, in source order: where each call expression starts.
-    pub lines: Vec<usize>,
-}
-
-/// A function together with the file it is defined in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub file: String,
-    pub func: FnInfo,
-}
+use crate::language::{CallKind, CallSite};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -114,32 +87,17 @@ pub struct Query<'a> {
     /// Include callers and callees that are tests. A queried function that is itself a test
     /// always shows what it uses.
     pub include_tests: bool,
+    /// The directory that file names are relative to. The project of a file is the nearest
+    /// manifest root between it and this directory (or this directory when there is none).
+    /// Imports are looked up below it on disk, and code outside the project or ignored by
+    /// `.gitignore` is a dependency.
+    pub root: &'a Path,
 }
 
 pub const MAX_DEPTH: usize = 3;
 
-/// External names named in a summary line before the rest is counted.
-const EXTERNAL_SHOWN: usize = 6;
-
 /// Lines named after `@` for one call before the rest are counted.
 const LINES_SHOWN: usize = 3;
-
-/// All functions in `source`, in source order. `None` when it cannot be parsed.
-pub fn functions(syntax: &dyn Syntax, source: &str) -> Option<Vec<FnInfo>> {
-    let tree = parse(syntax, source)?;
-    let imports = file_aliases(syntax, source)?;
-    let mut out = Vec::new();
-    walk(
-        tree.root_node(),
-        &mut Lineage::default(),
-        None,
-        syntax,
-        source,
-        &imports,
-        &mut out,
-    );
-    Some(out)
-}
 
 /// Function names that resemble `symbol`, for the message when it has no definition.
 pub fn suggest(index: &[Entry], symbol: &str) -> Vec<String> {
@@ -174,11 +132,14 @@ pub fn render(index: &[Entry], query: &Query<'_>) -> Option<String> {
         return None;
     }
     let mut out = String::new();
+    let origins = Origins::new(query.root, index);
     for target in targets {
         let ctx = Ctx {
             index,
             external: query.show_external,
             tests: query.include_tests || is_test(target),
+            origins: &origins,
+            asked: selector.name,
         };
         out.push_str(&label(target));
         out.push('\n');
@@ -199,6 +160,9 @@ struct Ctx<'a> {
     index: &'a [Entry],
     external: bool,
     tests: bool,
+    origins: &'a Origins<'a>,
+    /// The name the query asked for: its callers are all shown, whatever the receiver.
+    asked: &'a str,
 }
 
 impl Ctx<'_> {
@@ -227,25 +191,6 @@ fn key(entry: &Entry) -> String {
     format!("{}:{}", entry.file, entry.func.first)
 }
 
-/// Whether `def` is in the module named `module`: its file, the folder of a `mod.rs`, or an
-/// inline `mod`.
-fn in_module(def: &Entry, module: &str) -> bool {
-    let path = Path::new(&def.file);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let dir = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    stem == module
-        || (matches!(stem, "mod" | "__init__" | "lib" | "main") && dir == module)
-        || def
-            .func
-            .scope
-            .innermost()
-            .is_some_and(|frame| frame.kind == "mod" && frame.name == module)
-}
-
 /// Whether `call`, made in `caller`, can reach the definition `def`.
 fn accepts(call: &CallSite, caller: &Entry, def: &Entry) -> bool {
     if def.func.name != call.name {
@@ -266,9 +211,9 @@ fn accepts(call: &CallSite, caller: &Entry, def: &Entry) -> bool {
                 .func
                 .scope
                 .owner()
-                .is_some_and(|own| own.kind == "trait" || own.bare_name() == o.bare_name())
+                .is_some_and(|own| own.kind.interface || own.bare_name() == o.bare_name())
         }),
-        CallKind::Path(segment) if segment.starts_with(char::is_uppercase) => {
+        CallKind::Path(segment) if names_a_type(&caller.file, segment) => {
             owner.is_some_and(|o| o.bare_name() == segment.as_str())
         }
         CallKind::Path(module) => owner.is_none() && in_module(def, module),
@@ -291,18 +236,38 @@ fn possible_method_target(call: &CallSite, caller: &Entry, def: &Entry) -> bool 
 
 /// Return exact targets first. If a typed receiver has no visible exact target, preserve
 /// same-named local methods as possible targets instead of reporting the call as external.
+/// A call on a value of unknown type whose name is also called on a standard library or
+/// dependency receiver elsewhere has no target unless the query asked for that name.
 fn matching_defs<'a>(ctx: &Ctx<'a>, call: &CallSite, caller: &Entry) -> Vec<&'a Entry> {
+    if call.name != ctx.asked && ctx.origins.is_outside_method(call) {
+        return Vec::new();
+    }
     let exact: Vec<&Entry> = ctx
         .index
         .iter()
         .filter(|def| ctx.visible(def) && accepts(call, caller, def))
         .collect();
-    if exact.is_empty() && typed_receiver(call) {
-        return ctx
+    // An import or a written path that puts the callee in the standard library or a dependency
+    // rules out a same-named function of the project. A typed receiver keeps its exact targets,
+    // since a project trait can be implemented for a library type.
+    if !exact.is_empty() {
+        if typed_receiver(call) {
+            return exact;
+        }
+        return ctx.origins.narrow(call, caller, exact);
+    }
+    if typed_receiver(call) {
+        // The standard library and dependencies own the methods of their types: one that the
+        // project implements for such a type is an exact target, and nothing else can be.
+        if ctx.origins.is_outside_type(call, caller) {
+            return Vec::new();
+        }
+        let possible: Vec<&Entry> = ctx
             .index
             .iter()
             .filter(|def| ctx.visible(def) && possible_method_target(call, caller, def))
             .collect();
+        return ctx.origins.narrow(call, caller, possible);
     }
     exact
 }
@@ -323,24 +288,6 @@ fn possible_edge(ctx: &Ctx<'_>, call: &CallSite, caller: &Entry) -> bool {
     }
 }
 
-/// Whether a file is test code: it is in a `tests` or `test` folder or named like a test.
-pub fn is_test_path(file: &str) -> bool {
-    let path = Path::new(file);
-    let in_tests_dir = path
-        .components()
-        .any(|c| matches!(c.as_os_str().to_str(), Some("tests" | "test")));
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    in_tests_dir
-        || matches!(stem, "tests" | "conftest")
-        || stem.starts_with("test_")
-        || stem.ends_with("_test")
-}
-
-/// Whether an entry is test code: a test file or folder, or inside a test module or class.
-fn is_test(entry: &Entry) -> bool {
-    is_test_path(&entry.file) || entry.func.scope.in_test()
-}
-
 fn outgoing(
     ctx: &Ctx<'_>,
     from: &Entry,
@@ -349,18 +296,20 @@ fn outgoing(
     out: &mut String,
 ) {
     let indent = "  ".repeat(path.len());
-    let mut hidden: Vec<&str> = Vec::new();
+    let mut outside = Outside::default();
     for call in &from.func.calls {
         let defs = matching_defs(ctx, &call.site, from);
         if defs.is_empty() {
+            let verdict = ctx.origins.verdict(&call.site, from);
             if ctx.external {
                 out.push_str(&format!(
-                    "{indent}{}\t(external){}\n",
+                    "{indent}{}\t({}){}\n",
                     call.site.name,
+                    origin_label(&verdict.origin),
                     call_lines(&call.lines)
                 ));
-            } else if !hidden.contains(&call.site.name.as_str()) {
-                hidden.push(&call.site.name);
+            } else {
+                outside.add(&call.site.name, &verdict.origin);
             }
             continue;
         }
@@ -373,20 +322,8 @@ fn outgoing(
             descend(ctx, def, remaining, path, out, &edge, outgoing);
         }
     }
-    if !hidden.is_empty() {
-        let shown = hidden
-            .iter()
-            .take(EXTERNAL_SHOWN)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = hidden.len().saturating_sub(EXTERNAL_SHOWN);
-        let more = if more > 0 {
-            format!(" +{more}")
-        } else {
-            String::new()
-        };
-        out.push_str(&format!("{indent}(external: {shown}{more})\n"));
+    if !outside.is_empty() {
+        out.push_str(&format!("{indent}(external: {})\n", outside.render()));
     }
 }
 
@@ -480,60 +417,5 @@ fn call_lines(lines: &[usize]) -> String {
     match lines.len().saturating_sub(LINES_SHOWN) {
         0 => format!(" @{shown}"),
         more => format!(" @{shown} +{more}"),
-    }
-}
-
-fn walk(
-    node: Node<'_>,
-    scope: &mut Lineage,
-    current: Option<usize>,
-    syntax: &dyn Syntax,
-    source: &str,
-    imports: &[Alias],
-    out: &mut Vec<FnInfo>,
-) {
-    let mut cur = current;
-    let mut entered = false;
-    if let Some(def) = syntax.definition(node, source) {
-        if syntax.is_function(def.kind) {
-            let (first, last) = unit_span(syntax, node, source);
-            out.push(FnInfo {
-                name: def.name.clone(),
-                scope: scope.clone(),
-                first,
-                last,
-                calls: Vec::new(),
-            });
-            cur = Some(out.len() - 1);
-        }
-        scope.push(Frame::of(&def));
-        entered = true;
-    } else if let (Some(i), Some(mut site)) = (current, syntax.call_site(node, source)) {
-        if matches!(site.kind, CallKind::Free | CallKind::Any) {
-            site.name = resolve(imports, &site.name).to_string();
-        }
-        if let CallKind::MethodOf(receiver) | CallKind::Dyn(receiver) = &mut site.kind {
-            *receiver = resolve(imports, receiver).to_string();
-        }
-        let line = node.start_position().row + 1;
-        let calls = &mut out[i].calls;
-        match calls.iter_mut().find(|call| call.site == site) {
-            Some(call) => {
-                if !call.lines.contains(&line) {
-                    call.lines.push(line);
-                }
-            }
-            None => calls.push(Call {
-                site,
-                lines: vec![line],
-            }),
-        }
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk(child, scope, cur, syntax, source, imports, out);
-    }
-    if entered {
-        scope.pop();
     }
 }
