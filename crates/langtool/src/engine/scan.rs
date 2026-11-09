@@ -32,6 +32,13 @@ pub struct Scan<T> {
     skipped: usize,
 }
 
+/// The folder that the shown paths of [`files`] are relative to: the registered project, or the
+/// scanned folder when it lies outside the project.
+pub fn label_root(workspace: Option<&dyn Workspace>, target: &ScanTarget<'_>) -> Result<PathBuf> {
+    let scope = Scope::new(root_of(workspace), target.path, "implicit_path")?;
+    Ok(scope.root.to_path_buf())
+}
+
 /// The supported files that the target names or holds, as (shown path, absolute path), in walk
 /// order.
 pub fn files(

@@ -91,3 +91,30 @@ fn entrypoints_are_existing_files_of_the_project() {
         }
     }
 }
+
+#[test]
+fn member_links_join_distinct_folders_of_the_project() {
+    for syntax in syntaxes() {
+        let language = name(syntax);
+        let project = TempDir::new("language-links");
+        assert!(
+            syntax.member_links(&project.root).is_empty(),
+            "{language}: an empty folder has member links"
+        );
+        for manifest in syntax.manifests() {
+            project.write(manifest, "");
+        }
+        for (from, to) in syntax.member_links(&project.root) {
+            assert!(
+                from != to
+                    && from.is_dir()
+                    && to.is_dir()
+                    && from.starts_with(&project.root)
+                    && to.starts_with(&project.root),
+                "{language}: {} -> {} is not a link between folders of the project",
+                from.display(),
+                to.display()
+            );
+        }
+    }
+}

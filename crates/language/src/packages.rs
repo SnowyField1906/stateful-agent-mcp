@@ -82,4 +82,11 @@ pub trait Packages {
     fn entrypoints(&self, _dir: &Path) -> Vec<PathBuf> {
         Vec::new()
     }
+
+    /// The dependencies between the member projects of the workspace in `dir`, as their manifests
+    /// declare them: pairs of (folder of the member, folder of the member it depends on), absolute,
+    /// only between members. Empty for a folder that is no workspace.
+    fn member_links(&self, _dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+        Vec::new()
+    }
 }

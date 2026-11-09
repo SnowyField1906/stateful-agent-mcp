@@ -24,16 +24,20 @@
 //! `Ca` is the weight that arrives at a definition (dependents), `Ce` the weight that leaves it
 //! (dependencies), `I = Ce / (Ca + Ce)`. A file's load counts the mentions that cross files only.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::facts::{Def, FileFacts};
+use crate::engine::references::Role;
 use crate::engine::scope::bare_name;
 
 /// A name defined this many times in the survey tells nothing about where a mention goes.
 const COMMON: usize = 6;
 /// How much a mention made inside test code counts.
 const TEST_SHARE: f64 = 0.25;
+/// How much a function counts when a name is written as a plain value, not called: a variable
+/// called `rows` is hardly a mention of a method `rows`.
+const VALUE_OF_FUNCTION: f64 = 0.25;
 /// A definition is a base when it is at most this unstable.
 const BASE_LIMIT: f64 = 0.35;
 /// A definition is a hub when it is at least this unstable.
@@ -110,6 +114,8 @@ pub struct Graph {
     /// Per node: it can be named from outside its file and is a definition that other code names.
     exported: Vec<bool>,
     file_exported: Vec<bool>,
+    /// The distinct names behind the mentions from each file to each other file.
+    file_names: BTreeMap<(usize, usize), BTreeSet<String>>,
 }
 
 impl Graph {
@@ -145,6 +151,7 @@ impl Graph {
         }
 
         let mut weights: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+        let mut file_names: BTreeMap<(usize, usize), BTreeSet<String>> = BTreeMap::new();
         for (node, id) in ids.iter().enumerate() {
             let def = def_of(*id);
             if def.uses.is_empty() {
@@ -155,12 +162,14 @@ impl Graph {
             } else {
                 1.0
             };
-            let mut mentioned: HashSet<&str> = HashSet::new();
+            let mut roles: BTreeMap<&str, Vec<Role>> = BTreeMap::new();
             for used in &def.uses {
-                let name = bare_name(&used.name);
-                if !mentioned.insert(name) {
-                    continue;
-                }
+                roles
+                    .entry(bare_name(&used.name))
+                    .or_default()
+                    .push(used.role);
+            }
+            for (name, roles) in roles {
                 let Some(defined) = named.get(name) else {
                     continue;
                 };
@@ -169,7 +178,7 @@ impl Graph {
                     .copied()
                     .filter(|&target| ids[target].file == id.file)
                     .collect();
-                let targets: &[usize] = if local.is_empty() {
+                let candidates: &[usize] = if local.is_empty() {
                     if defined.len() >= COMMON || outside(id.file, name) {
                         continue;
                     }
@@ -177,10 +186,28 @@ impl Graph {
                 } else {
                     &local
                 };
-                let weight = share / targets.len() as f64;
-                for &target in targets {
+                // The way the name is written must suit the definition: a type is named as a type.
+                let targets: Vec<(usize, f64)> = candidates
+                    .iter()
+                    .map(|&target| {
+                        let fit = roles
+                            .iter()
+                            .map(|&role| fit(role, def_of(ids[target])))
+                            .fold(0.0, f64::max);
+                        (target, fit)
+                    })
+                    .filter(|&(_, fit)| fit > 0.0)
+                    .collect();
+                for &(target, fit) in &targets {
                     if target != node && !encloses(files, ids[target], *id) {
-                        *weights.entry((node, target)).or_default() += weight;
+                        *weights.entry((node, target)).or_default() +=
+                            share * fit / targets.len() as f64;
+                        if ids[target].file != id.file {
+                            file_names
+                                .entry((id.file, ids[target].file))
+                                .or_default()
+                                .insert(name.to_string());
+                        }
                     }
                 }
             }
@@ -210,6 +237,7 @@ impl Graph {
             file_loads,
             exported,
             file_exported,
+            file_names,
         }
     }
 
@@ -275,6 +303,13 @@ impl Graph {
         edges
     }
 
+    /// The distinct names behind the mentions from each file to each other file, as
+    /// [`file_edges`](Self::file_edges) keys them: one name is more often a collision than a
+    /// dependency.
+    pub fn file_names(&self) -> &BTreeMap<(usize, usize), BTreeSet<String>> {
+        &self.file_names
+    }
+
     /// The tag of every definition, by node. The quartiles are those of the loads in the graph.
     pub fn def_tags(&self) -> Vec<Tag> {
         tags(&self.loads, &self.exported)
@@ -289,9 +324,26 @@ impl Graph {
 
 /// Whether other code can mention the definition by name: not an `impl` block, which defines no
 /// name, and not a kind listed only on request (a field, a variant).
-fn is_named(def: &Def) -> bool {
+pub fn is_named(def: &Def) -> bool {
     let kind = def.symbol.kind;
     !kind.on_request && !(kind.owner && !kind.declares_type)
+}
+
+/// Whether the definition is test code: marked as a test, or written inside one.
+pub fn in_test(def: &Def) -> bool {
+    def.symbol.test || def.symbol.scope.in_test()
+}
+
+/// How well the definition `def` suits a name written the way `role` says: a type is named as a
+/// type, and a function named as a plain value is rarely the function (see [`VALUE_OF_FUNCTION`]).
+/// `0.0` means it is not what the name means.
+fn fit(role: Role, def: &Def) -> f64 {
+    let kind = def.symbol.kind;
+    match role {
+        Role::Type if !kind.declares_type => 0.0,
+        Role::Use if kind.function => VALUE_OF_FUNCTION,
+        _ => 1.0,
+    }
 }
 
 /// Whether the definition `outer` is written around the definition `inner`.
@@ -332,6 +384,12 @@ fn tags(loads: &[Load], exported: &[bool]) -> Vec<Tag> {
             }
         })
         .collect()
+}
+
+/// The tags of `loads` read against their own quartiles. `exported[i]` says whether item `i` can
+/// be a door.
+pub fn tag_loads(loads: &[Load], exported: &[bool]) -> Vec<Tag> {
+    tags(loads, exported)
 }
 
 /// The smallest of the largest quarter of the positive `values`; infinite when there are none, so

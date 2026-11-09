@@ -6,10 +6,17 @@ pub mod find_references;
 pub mod find_symbols;
 pub mod read_file;
 pub mod run_action;
+pub mod summarize_codebase;
+pub mod summarize_feature;
+pub mod summarize_symbol;
+mod summarize_symbol_story;
 pub mod view_callgraph;
 
 pub use find_references::FindReferencesParams;
 pub use find_symbols::FindSymbolsParams;
 pub use read_file::{ReadFileEntry, ReadFileParams};
 pub use run_action::RunActionParams;
+pub use summarize_codebase::SummarizeCodebaseParams;
+pub use summarize_feature::SummarizeFeatureParams;
+pub use summarize_symbol::SummarizeSymbolParams;
 pub use view_callgraph::ViewCallgraphParams;

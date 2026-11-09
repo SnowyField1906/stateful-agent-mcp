@@ -20,6 +20,12 @@ pub trait Workspace {
     /// update ID); `None` when the file did not exist then.
     fn read_at(&self, id: &str, rel: &str) -> Result<Option<String>>;
 
+    /// Content of `rel` just before the turn `id` (a turn or an update ID) ran; `None` when the file
+    /// did not exist then, and for a workspace without a ledger.
+    fn read_before(&self, _id: &str, _rel: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// A tool showed `text` to the agent as the content of `rel`, as it is on disk now. A workspace
     /// may keep it to recognise a later quote of that version; the default forgets it.
     fn note_seen(&self, _rel: &str, _text: &str) {}

@@ -2,6 +2,7 @@
 
 use crate::common::{AgentError, Result};
 use crate::engine::Project;
+use crate::engine::ops::elide::stand_ins_absent;
 use crate::engine::ops::overlay::Overlay;
 use crate::engine::ops::patch::{History, Version, apply_hunks_tolerant};
 use crate::engine::ops::rename::rename_symbol;
@@ -23,6 +24,8 @@ pub(super) struct BatchTracker {
     pub(super) deleted: Vec<String>,
     /// `(path, summary)` of symbol edits that added a parse error to the file when applied.
     pub(super) syntax_suspects: Vec<(String, String)>,
+    /// Warnings for placeholder lines that a `Patch` wrote as text (see `stand_ins_absent`).
+    pub(super) placeholder_warnings: Vec<String>,
 }
 
 impl Project {
@@ -41,7 +44,13 @@ impl Project {
             }
             FileOp::Patch { path, hunks } => {
                 let versions = || self.quotable_versions(flat, path);
-                patch(ov, path, hunks, &History::new(&versions))
+                patch(
+                    ov,
+                    path,
+                    hunks,
+                    &History::new(&versions),
+                    &mut tracker.placeholder_warnings,
+                )
             }
             FileOp::ReplaceSymbol {
                 path,
@@ -142,6 +151,7 @@ fn patch(
     path: &str,
     hunks: &[PatchHunk],
     history: &History<'_>,
+    warnings: &mut Vec<String>,
 ) -> Result<String> {
     if hunks.is_empty() {
         return Err(AgentError::invalid(path, "no hunks"));
@@ -151,6 +161,16 @@ fn patch(
         .ok_or_else(|| AgentError::PathNotFound(path.to_string()))?;
     let done = apply_hunks_tolerant(path, &text, hunks, history)?;
     ov.set(path, Some(done.text))?;
+    for hunk in &done.hunks {
+        for line in stand_ins_absent(&text, &hunk.new_text) {
+            let warning = format!(
+                "{path}: wrote `{line}` as text; the file had no such line, so check that it does not stand in for code that should stay"
+            );
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+    }
     let mut summary = op_summary(&FileOp::Patch {
         path: path.to_string(),
         hunks: done.hunks,

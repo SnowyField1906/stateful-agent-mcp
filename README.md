@@ -2,23 +2,26 @@
 
 ## What is this MCP?
 
-This MCP server offers its own **code-intelligence tools** (currently only `rust` and `python` supported for advanced tools). It allows limited-token AI clients to work onto our local codebase with no friction:
+This MCP server offers its own **code-intelligence tools** (currently only `rust` and `python` supported for advanced ones). It allows limited-token AI clients to work on our local codebase with minimal friction:
 
 1. **Reason with code-intelligence tools**:
 
-   There are several tools that allows AI agent to inspect the unfamiliar codebase in a familiar reverse engineering workflow and result formats, such as `find_symbols`, `find_references`, `view_callgraph`, etc.
+   This MCP server offers several tools that help the AI client inspect an unfamiliar codebase with a familiar reverse-engineering workflow and result formats, such as `find_symbols`, `find_references` and `view_callgraph`. \
+   There are also heuristic tools like `summarize_workspace`, `summarize_symbol` and `summarize_feature` which use PageRank-like algorithms and were calibrated to reduce repeated warm-up patterns.
 
 2. **Edit with various smart patch modes**:
 
-   There are also high-level edit tools as how humans conveniently work, such as `ReplaceSymbol`, `InsertBeforeSymbol`, `InsertAfterSymbol`, `RenameSymbol`, etc.
+   There are also high-level edit tools that work the way humans conveniently edit, such as `ReplaceSymbol`, `InsertBeforeSymbol`, `InsertAfterSymbol` and `RenameSymbol`.
 
 3. **Get aligned by hints embedded in tool responses**:
 
-   Inefficient tool call patterns are tracked to help AI clients learn gently and effectively during interaction time, instead of from long strict instructions in the beginning.
+   Inefficient tool call patterns are tracked to help AI clients learn gently and effectively during interaction time, instead of from long strict instructions at the beginning. \
+   And similar to how humans interact with software, the MCP server can proactively offer choices for the AI client to pick to reduce redundant messages (like options of rebased states, location to insert when multiple ones found, etc.).
 
 4. **Have high fault-tolerance**:
 
-   There are smart resolvers underlying this MCP server that corrects the most common mistakes, which saves token and time from wasteful retries.
+   There are smart resolvers underneath this MCP server that correct the most common mistakes, which saves tokens and time from wasteful retries. \
+   When a patch can't be fixed safely, it announces an minimal report needed for the AI client's next try.
 
 ---
 
@@ -26,116 +29,54 @@ This MCP server also offers its own **git-like version management** which especi
 
 5. **Carry minimal cross-session context**:
 
-   It supports the AI client to grab from relevant insight notes to the exact diff changes between any session, rather than being fed massive handoff documents.
+   It supports the AI client to grab from relevant insight notes to the exact diff changes between any sessions, rather than being fed massive handoff documents.
 
 6. **Work effectively as a relay race (1)**:
 
-   This MCP server encourages the AI client to make dripping changes and proactively handover the gaps that couldn't fill right away from preexisting context.
+   This MCP server encourages the AI client to make dripping changes and proactively hand over the gaps that couldn't be filled right away from pre-existing context.
 
 7. **Work effectively as a relay race (2)**:
 
-   The fresh AI client can start to work right away with contexted tasks from prior AI client, rather than wasting time to understand codebase or general plans from scratch.
+   A fresh AI client can start working right away with contexted tasks from the prior AI client, rather than wasting time understanding the codebase or general plans from scratch.
 
 8. **Have high conflict-resistance**:
 
-   Concurrent edits by user on disk are detectable and auto-resolved/ignored if needed, otherwise, the AI clients can be notified of the critical changes and resolve it with least actions needed.
+   Concurrent edits made by us on disk are detected and automatically resolved or ignored when possible. \
+   Otherwise, the AI client is notified of the critical changes and can resolve them with the minimal effort needed.
 
 ---
 
-Over the conveniences for AI clients, this MCP is also aimed for our convenience:
+Besides the conveniences for AI clients, this MCP also aims for our convenience:
 
 9. **Prioritize readability and reviewability**:
 
-   The database of this MCP server are well-formatted `.md` files so that we can easily track the progress from incremental tasks, edit the insight notes, or review the file diffs, all within each turn.
+   The database of this MCP server is made of well-formatted `.md` files so that we can easily track the progress of incremental tasks, edit the insight notes, or review the file diffs, all within each turn.
 
-10. **Prioritize automatic work loop**:
+10. **Prioritize automatic work loops**:
 
-    Essential code actions like `lint`, `build`, `test` are available when we configure them so that the AI clients can verify the code by themself without handing over back to us such tasks of running code actions.
+    Essential code actions like `lint`, `build` and `test` are available once we configure them, so that AI clients can verify the code by themselves without handing over such tasks back to us.
 
 11. **No underlying language servers**:
 
-    There are some well-known MCP servers that support code-intelligence tools like [@oraios/serena](https://github.com/oraios/serena), yet it requires heavy language servers that indexed the entire codebase on startup and fail to work with a wall of errors if there is any imperfect patch, which is unlikely to ensure when updating code.
+    There are some well-known MCP servers that support code-intelligence tools, like [@oraios/serena](https://github.com/oraios/serena), yet they require heavy language servers that index the entire codebase on startup and fail to work with a wall of errors if there is any imperfect patch, which unlikely to ensure when writing code].
 
 12. **Allow to code on itself without manual reload**:
 
-    If there is any feature you want to improve or add, this repository also offers an alternative MCP server that can hot-reload the standard one, which allows the AI client to use the MCP server to coding on itself, experiment new changes immediately by itself, and improve it by itself like a loop of self-evolution, without your intervention to restart the MCP server or the AI client.
+    If there is any feature you want to improve or add, this repository also offers an alternative MCP server that can hot-reload the standard one. It allows the AI client to use the MCP server to code on itself, experiment with new changes immediately, and improve itself in a loop of self-evolution, without your intervention to restart the MCP server or the AI client.
 
 ## Why this MCP?
 
 Many AI chat platforms nowadays (like Claude and ChatGPT) have limited free-tier usage and prohibit continuing a shared chat from another account (yes, they know there'll be ones like me).
 
-If you can't afford Claude Code but have 10 Claude free-tier accounts, or have ambitious projects that come with troubles when splitting long-running tasks into multiple sessions across multiple chat windows, then you might need an MCP server that not only lets AI work directly onto your local codebase but also lets AI of different sessions understand each other's work and handover tasks with minimal token usage.
-
-## On the "LLM-ergonomic workflow" philosophy
-
-Humans and LLMs work in very different ways, and we unintentionally design it following our heuristics. This MCP is built around bending a few human habits into something an LLM can actually survive.
-
-### Gently align AI with hints embedded in tool call responses
-
-Massive instructions consume token unnecessarily before ever starting anything. And strict instructions makes AI act in extreme manner due to pink-elephant phenomenon _(if you're told to not imagine a pink elephant, you can't help but imagine it or get distracted)_.
-
-Most systems on this world follows by attractor dynamics _(i.e. systems doesn't need to know or compute where is the ground state among the landscapes, but only react to the local rules/forces/feedbacks at the current until reaching balance point)_, because only that process can make complex things possible.
-
-Being inspired by it, I discovered that instead of trying to align the AI in the beginning, gently hinting what to do next within tool call responses will consume much less tokens and work much more effectively. The MCP also keeps track of AI habits in the session so that it can proactively embed recommendations when needed without brute interruptions.
-
-By this, the AI will be gently and naturally aligned with the workflow orbit just by repeated interactions with tool calls, without wasting token unnecessarily or making it behave extremely.
-
-### Let AI proactively handing over necessary updates next
-
-Giving one big task is obviously a bad idea because it has to guess its own location in every fresh session. Yet dividing it into several small tasks is not better either because not only it will be get lost but also coding tasks are interdependent in nature.
-
-But when AI has worked on a task and handover the gaps it couldn't fill right away, it's more effective and easy to track the progress than sending same task or plan table over and again. And the context only ever holds the next step.
-
-All handover tasks are automatically treated as done within turn unless explicitly passed to next turn with `RollOver`, which I expect to reinforce its awareness of the work.
-
-### Provide cleaner context from code diffs and side notes within
-
-Presenting updates of work in natural language encourages worthless exaggeration and dangerous deception, also the last-session AI is likely not able to generate work summaries since it often runs out of token halfway.
-
-So instead of letting next-session AI reading conversation or summary of works, reading file diffs is much more effective and token-efficient regarding understanding past context and previous attempts along with the insights and tasks at that point.
-
-Notes keep critical insights or what a later turn could not guess.
-By letting current turn settle grounding points with insight notes and explicit direction with practical small tasks. It becomes easier to follow up unfinished work and track the progress.
-
-Allowing extracting insight notes and incremental short-term tasks across between checkpoints is incredibly powerful regarding to study tasks.
-
-### Let AI reason with code-intelligence tools
-
-Pareto rule says that only 20% actors takes responsibility for 80% consequences. Regardless of the codebase size, you can still deliver the major of important information in just 20% tokens.
-
-With such code intelligence tools like `langtool_find_symbols`, `langtool_find_references`, or `langtool_view_callgraph` enabled, AI doesn't need to trace file by file over codebase but can analyze it systematically and effectively. Which empowers it further more than just understanding session context by file diffs.
-
-### Tolerate dripping changes
-
-Like how most coding agents nowadays work, instead of letting it attempt to get most things right at once. It's more flexible and recoverable to patch multiple times like soft checkpoints, and the MCP just automatically squashes them into net diffs in backstage.
-
-Also, when AI creates a turn, it means the AI has understood most of the context and ready to make first changes. So it's better to let AI decides right away what to do as a ground point instead of having an unclear plan and chasing the unfinished tasks indefinitely.
-
-## On other design choices
-
-### Prioritize recoverability and human reviewability
-
-The database of this MCP server is intentionally `.md` files in `.AGENTS/sessions/`, which are well-formatted and clean information that you can read exactly what the AI does in each turn. It prioritizes reporting insights and tasks directly in those files rather than wasting tokens by presenting them again in the chat.
-
-Also all trial-and-error updates in a single turn are automatically squashed by the MCP so that the changes are minimal for our readable ability and AI's optimal token usage in future review.
-
-If you're'm non-tech or too lazy to review such logs, then that's okay, you can let another AI review everything since the MCP server itself is stateful. It can recover things if you want. And it can recover recovered things if you trust it again.
-
-### Prioritize automatic work loops
-
-You might have suffered the experience where it generates a bad code snippet, you scold it, and then it gives you a _better code snippet_ instead of a _better code snippet that also recovers the previous bad code snippet_.
-
-Not only do you have to copy, find the place, select the code, and paste it, but you also can't follow its changes and you end up with a lot of dead code. And once it runs out of tokens, you have to present everything all over again in another fresh and token-limited chat window.
-
-And you will have to repeatedly reports failed tests and build errors when it demands. AI should do repeated things, yet you're the only one who ends up doing so.
-
-With `test` or `build` tools enabled, it can keep follow up previous work and make new tasks indefinitely without having workflow messed up by your interruptions or handing over test/build tasks back to you.
+If you can't afford Claude Code but have 10 Claude free-tier accounts, or have an ambitious project that comes with troubles when splitting long-running tasks into multiple sessions across multiple chat windows, then you might need an MCP server that not only lets AI work directly on your local codebase but also lets AI in different sessions understand each other's work and hand over tasks with minimal token usage.
 
 ## How it works?
 
-A **session** is one run, usually one chat window. When a project is opened, it sends the AI set of project instruction, MCP tools guide, summary of sessions and last turn's information.
+### Workflow
 
-Here is a full round trip, including the part where the chat runs out of tokens halfway:
+A session is usually one chat window. When a project is opened, it sends the AI the project instructions, the MCP tools guide, a summary of the sessions and the last turn's information.
+
+Here is a full round trip including the part where the chat runs out of tokens halfway:
 
 ```mermaid
 %%{init: {"sequence": {"mirrorActors": false}}}%%
@@ -148,7 +89,9 @@ sequenceDiagram
 
     A->>M: workflow_register
     M-->>A: instructions, last handover and notes
-    A->>M: filesystem_ls, filesystem_grep, langtool_read_file
+    A->>M: langtool_summarize_codebase
+    M-->>A: layers, entry points, where to start
+    A->>M: filesystem_grep, langtool_read_file
     M-->>A: gitignore-aware
 
     A->>M: workflow_new_turn with title
@@ -157,7 +100,7 @@ sequenceDiagram
     loop trial and error
         A->>M: workflow_write_files(Patch, Move, Create ...)
         M->>D: write and recompute the turn's net diff
-        M-->>A: summaries of the operation
+        M-->>A: summaries of the operation, repair notes if any
     end
 
     A->>M: workflow_write_notes(why nom, CRLF trap)
@@ -166,15 +109,34 @@ sequenceDiagram
 
     B->>M: workflow_register
     M-->>B: the notes and open tasks left by session 01
+    B->>M: langtool_summarize_codebase
+    M-->>B: overview, with open tasks resolved to code locations
     B->>M: workflow_get_files_diff(01.02) and workflow_get_files_history(src/parser.rs)
     B->>M: workflow_new_turn(title, RollOver task 01.02.task.01)
     B->>M: workflow_write_files(Recover 01.02.update.src/parser.rs)
     Note over M,B: a bad change is undone, and the undo is recorded too
 ```
 
-## Storage layout
+### Layers
 
-The state is plain files that you can read on GitHub, review, and edit by hand.
+The code is split into crates, and each crate only depends on the ones below it.
+
+```mermaid
+flowchart LR
+    L5["server"]
+    L4["workflow"]
+    L3["langtool"]
+    L2["toolchain, filesystem"]
+    L1["language, common"]
+    P["proxy"]
+
+    L5 --> L4 --> L3 --> L2 --> L1
+    P -.->|reloads| L5
+```
+
+### Storage layout
+
+The state is plain files that you can review or edit by hand.
 
 ```text
 .AGENTS/
@@ -285,8 +247,8 @@ The two usage guides are written once and then belong to your project, so edit t
       <td style="text-align:left;vertical-align:middle;"><code>filesystem_file_metadata</code></td>
     </tr>
     <tr>
-      <td rowspan="5" style="text-align:left;vertical-align:middle;"><b>Language-specific tools</b></td>
-      <td rowspan="4" style="text-align:left;vertical-align:middle;">Read-only</td>
+      <td rowspan="8" style="text-align:left;vertical-align:middle;"><b>Language-specific tools</b></td>
+      <td rowspan="7" style="text-align:left;vertical-align:middle;">Read-only</td>
       <td style="text-align:left;vertical-align:middle;"><code>langtool_read_file</code></td>
     </tr>
     <tr>
@@ -297,6 +259,15 @@ The two usage guides are written once and then belong to your project, so edit t
     </tr>
     <tr>
       <td style="text-align:left;vertical-align:middle;"><code>langtool_view_callgraph</code></td>
+    </tr>
+    <tr>
+      <td style="text-align:left;vertical-align:middle;"><code>langtool_summarize_codebase</code></td>
+    </tr>
+    <tr>
+      <td style="text-align:left;vertical-align:middle;"><code>langtool_summarize_symbol</code></td>
+    </tr>
+    <tr>
+      <td style="text-align:left;vertical-align:middle;"><code>langtool_summarize_feature</code></td>
     </tr>
     <tr>
       <td style="text-align:left;vertical-align:middle;">Write</td>
@@ -316,7 +287,7 @@ cargo test
 cargo build --release
 ```
 
-This is an example of how to configure tools for supported languages in `.AGENTS/config.toml`, if you want to disable a tool, just pass an empty string `""`. These settings are re-loaded per session.
+This is an example of how to configure tools for supported languages in `.AGENTS/config.toml`. If you want to disable a tool, just pass an empty string `""`. These settings are reloaded per session.
 
 ```toml
 [rust]
@@ -349,7 +320,7 @@ The server speaks MCP over stdio and your client normally launches it. A typical
 }
 ```
 
-More specific schema:
+The full usage:
 
 ```text
 /path/to/stateful-agent-mcp/target/release/stateful-agent [OPTIONS] [PROJECT]
@@ -363,11 +334,11 @@ More specific schema:
 
 Then ask the AI to register your project by its absolute path.
 
-The mode only changes the advice in the guide. `continuous` is for agents that run many tool calls in a row and moves to a new turn after each settled step, like a commit. `session-based` is for chats that can be cut off at any time, so it keeps a handover ready all along. Logs go to stderr, and `STATEFUL_AGENT_MCP_LOG=debug` turns up the detail.
+The mode only changes the advice in the guide. `continuous` is for agents that run many tool calls in a row and move to a new turn after each settled step, like a commit. `session-based` is for chats that can be cut off at any time, so it keeps a handover ready all along. Logs go to stderr, and `STATEFUL_AGENT_MCP_LOG=debug` turns up the detail.
 
 ## Hot Reload Proxy
 
-In case you want to an AI client using `stateful-agent` to code on itself, experiment new changes by itself, and then improve itself, without our intervention, then you can configure another MCP server `stateful-agent-proxy` that can hot reload the standard server and pass generic calls to updated schema or new tools.
+In case you want an AI client using `stateful-agent` to code on itself, experiment with new changes by itself, and then improve itself, all without our intervention. Then you can configure another MCP server `stateful-agent-proxy` which that can hot-reload the standard server and pass generic calls to the updated schema or new tools.
 
 ### Tools
 
@@ -408,15 +379,14 @@ In case you want to an AI client using `stateful-agent` to code on itself, exper
 }
 ```
 
-It takes same argument options as the standard one.
+It takes the same argument options as the standard one.
 
 ## Roadmap
 
-- Support multiple codebase analyze modes such as `explore` (focused on understanding the entry points and initial overview) or `feature` (focused on understanding the context of relevant and dependent implementations), etc.
 - Support a `squash` tool that folds unnecessary past done sessions into fewer, compact, fresh ones.
 - Support long-term `goals` to balance long-term instructions against short-term tasks.
 - Support long-term `docs.{scope}` to balance long-term instructions against short-term notes.
-- Encourage AI makes temporal tests for turn-specific changes with `scratch-test` instead of stuffing them into the main test files that procedures dead codes.
+- Encourage AI makes temporal tests for turn-specific changes with `scratch` instead of stuffing them into the main test files that procedures dead codes.
 
 ## License
 

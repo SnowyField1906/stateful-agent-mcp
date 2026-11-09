@@ -8,7 +8,9 @@ use crate::{State, steering};
 
 impl State {
     pub fn filesystem_ls(&self, p: LsParams) -> Result<String> {
-        self.with_workspace(|workspace| ls::ls(workspace, self.config(), p))
+        let out = self.with_workspace(|workspace| ls::ls(workspace, self.config(), p))?;
+        let hint = self.tool_hints().after_ls(true);
+        Ok(steering::hinted(out, hint))
     }
 
     pub fn filesystem_find(&self, p: FindParams) -> Result<String> {

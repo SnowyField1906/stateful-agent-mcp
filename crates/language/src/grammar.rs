@@ -68,6 +68,26 @@ pub trait Grammar {
     /// What `node` names when it is an identifier, `None` for any other node.
     fn identifier(&self, node: Node<'_>) -> Option<Ident>;
 
+    /// Whether the identifier `node` introduces a local name: a variable of a `let` or a loop, a
+    /// parameter, a name bound by a pattern. Such a name says nothing about the definitions of
+    /// the same name elsewhere. The default is that none does.
+    fn is_binding(&self, _node: Node<'_>) -> bool {
+        false
+    }
+
+    /// Whether the identifier `node` is written as a segment of a path (`a::b`), which names a
+    /// definition, never a local variable. The default is that none is.
+    fn is_path(&self, _node: Node<'_>) -> bool {
+        false
+    }
+
     /// Node kinds whose text is not code: comments and string literals.
     fn text_kinds(&self) -> &'static [&'static str];
+}
+
+/// Whether `child` is the node that the field `name` of `parent` holds.
+pub(crate) fn is_field(parent: Node<'_>, name: &str, child: Node<'_>) -> bool {
+    parent
+        .child_by_field_name(name)
+        .is_some_and(|node| node.id() == child.id())
 }

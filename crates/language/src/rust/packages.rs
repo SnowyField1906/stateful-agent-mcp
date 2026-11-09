@@ -41,6 +41,16 @@ impl Packages for RustSyntax {
     }
 
     fn entrypoints(&self, dir: &Path) -> Vec<PathBuf> {
-        manifest::entrypoints(dir)
+        let mut found = manifest::entrypoints(dir);
+        for member in manifest::members(dir) {
+            found.extend(manifest::entrypoints(&member));
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    fn member_links(&self, dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+        manifest::member_links(dir)
     }
 }

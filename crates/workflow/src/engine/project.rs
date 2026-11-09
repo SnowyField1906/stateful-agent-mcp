@@ -386,6 +386,24 @@ impl Workspace for Project {
         };
         self.content_before(&flat, idx + 1, rel)
     }
+
+    fn read_before(&self, id: &str, rel: &str) -> Result<Option<String>> {
+        let flat = self.flat_keys();
+        let idx = match self.parse_selector(&flat, id)? {
+            Sel::Turns { lo, .. } => lo,
+            Sel::Update(key, _) => flat
+                .iter()
+                .position(|k| *k == key)
+                .ok_or_else(|| AgentError::NotFound(format!("turn {key}")))?,
+            _ => {
+                return Err(AgentError::invalid(
+                    "id",
+                    "expected a turn, session or update ID",
+                ));
+            }
+        };
+        self.content_before(&flat, idx, rel)
+    }
 }
 
 /// Create the two usage guides if missing. `INSTRUCTION.md` is never created.

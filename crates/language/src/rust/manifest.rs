@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use crate::project::clean;
 use crate::tables::{read, section};
 
 /// How a manifest declares a dependency.
@@ -86,6 +87,98 @@ pub fn entrypoints(dir: &Path) -> Vec<PathBuf> {
     found.sort();
     found.dedup();
     found
+}
+
+/// The folders of the members of the workspace in `dir`: the ones `[workspace] members` lists (a
+/// trailing `/*` stands for every folder below it that holds a manifest) and the root package.
+/// Empty when the manifest in `dir` declares no workspace.
+pub fn members(dir: &Path) -> Vec<PathBuf> {
+    let Some(root) = read(&dir.join("Cargo.toml")) else {
+        return Vec::new();
+    };
+    let Some(workspace) = section(&root, &["workspace"]) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let listed = workspace.get("members").and_then(Value::as_array);
+    for entry in listed.into_iter().flatten().filter_map(Value::as_str) {
+        match entry.strip_suffix("/*") {
+            Some(parent) => {
+                for child in fs::read_dir(dir.join(parent))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    found.push(clean(&child.path()));
+                }
+            }
+            None if !entry.contains(['*', '?', '[']) => found.push(clean(&dir.join(entry))),
+            None => {}
+        }
+    }
+    if root.contains_key("package") {
+        found.push(clean(dir));
+    }
+    found.retain(|member| member.join("Cargo.toml").is_file());
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The path dependencies between the members of the workspace in `dir`, as (member folder, folder
+/// of the member it depends on). A dependency inherited with `workspace = true` is looked up in
+/// `[workspace.dependencies]`.
+pub fn member_links(dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let members = members(dir);
+    if members.is_empty() {
+        return Vec::new();
+    }
+    let root = read(&dir.join("Cargo.toml"));
+    let mut shared: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(table) = root
+        .as_ref()
+        .and_then(|root| section(root, &["workspace", "dependencies"]))
+    {
+        for (name, value) in table.iter() {
+            if let Some(path) = value.get("path").and_then(Value::as_str) {
+                shared.push((normalize(name), clean(&dir.join(path))));
+            }
+        }
+    }
+
+    let mut links = Vec::new();
+    for member in &members {
+        let Some(manifest) = read(&member.join("Cargo.toml")) else {
+            continue;
+        };
+        for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(table) = section(&manifest, &[key]) else {
+                continue;
+            };
+            for (name, value) in table.iter() {
+                let target = match value.get("path").and_then(Value::as_str) {
+                    Some(path) => Some(clean(&member.join(path))),
+                    None if value.get("workspace").and_then(Value::as_bool) == Some(true) => {
+                        let want = normalize(name);
+                        shared
+                            .iter()
+                            .find(|(shared_name, _)| *shared_name == want)
+                            .map(|(_, path)| path.clone())
+                    }
+                    None => None,
+                };
+                if let Some(target) = target
+                    && target != *member
+                    && members.contains(&target)
+                {
+                    links.push((member.clone(), target));
+                }
+            }
+        }
+    }
+    links.sort();
+    links.dedup();
+    links
 }
 
 /// `None` when the dependency is inherited from the workspace.

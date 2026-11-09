@@ -13,6 +13,8 @@
 use crate::common::{AgentError, LineNumber, Result};
 
 use super::PatchHunk;
+use super::diagnose::{self, Miss};
+use super::elide;
 use super::rebase;
 pub use super::rebase::{History, Version};
 use super::repair;
@@ -85,34 +87,53 @@ fn apply_all(
     let mut current = text.to_string();
     let mut applied = Vec::with_capacity(hunks.len());
     let mut repairs = Vec::new();
-    let mut failures: Vec<(usize, String)> = Vec::new();
+    let mut failures: Vec<(usize, Miss)> = Vec::new();
     let mut edits: Vec<AppliedEdit> = Vec::new();
+    let mut placed: Vec<(usize, Option<(usize, usize)>)> = Vec::new();
 
     for (index, hunk) in hunks.iter().enumerate() {
-        match apply_one(path, &mut current, &mut edits, hunk, history) {
-            Ok(Placed::Exact(done)) => applied.push(done),
+        let earlier: Vec<(usize, usize, usize)> = placed
+            .iter()
+            .filter_map(|&(number, span)| span.map(|(first, last)| (number, first, last)))
+            .collect();
+        match apply_one(
+            path,
+            &mut current,
+            &mut edits,
+            hunk,
+            history,
+            (text, earlier.as_slice()),
+        ) {
+            Ok(Placed::Exact(done)) => {
+                placed.push((index + 1, span_of(&done)));
+                applied.push(done);
+            }
             Ok(Placed::Repaired(done, how)) => {
+                placed.push((index + 1, span_of(&done)));
                 applied.push(done);
                 repairs.push(Repair {
                     hunk: index + 1,
                     how,
                 });
             }
-            Ok(Placed::Already(how)) => repairs.push(Repair {
-                hunk: index + 1,
-                how,
-            }),
+            Ok(Placed::Already(how)) => {
+                placed.push((index + 1, None));
+                repairs.push(Repair {
+                    hunk: index + 1,
+                    how,
+                });
+            }
             Err(reason) if history.is_some() => failures.push((index, reason)),
             Err(reason) => {
                 return Err(AgentError::PatchConflict {
                     path: path.to_string(),
-                    reason: format!("hunk {}: {reason}", index + 1),
+                    reason: format!("hunk {}: {}", index + 1, reason.note),
                 });
             }
         }
     }
     if !failures.is_empty() {
-        return Err(failure_report(path, hunks.len(), &failures));
+        return Err(failure_report(path, hunks.len(), &failures, &placed));
     }
     Ok(Applied {
         text: current,
@@ -121,31 +142,18 @@ fn apply_all(
     })
 }
 
-/// One error for every hunk that did not place. The hunks after a failed one were checked against
-/// the text without it, and nothing was written.
-fn failure_report(path: &str, total: usize, failures: &[(usize, String)]) -> AgentError {
-    let reason = match failures {
-        [(index, reason)] if total == 1 => format!("hunk {}: {reason}", index + 1),
-        [(index, reason)] => format!(
-            "hunk {}: {reason} (the other {} hunks matched; nothing was written)",
-            index + 1,
-            total - 1
-        ),
-        _ => {
-            let lines: Vec<String> = failures
-                .iter()
-                .map(|(index, reason)| format!("  hunk {}: {reason}", index + 1))
-                .collect();
-            format!(
-                "{} of {total} hunks did not match and nothing was written; a hunk after a failed one was checked without it:\n{}",
-                failures.len(),
-                lines.join("\n")
-            )
-        }
-    };
+/// One error for every hunk that did not place, written by `diagnose::report`: the failed hunks with
+/// their class and differing rows, the hunks that were verified, and those that touch a failed
+/// hunk's window and so are unverified. Nothing was written.
+fn failure_report(
+    path: &str,
+    total: usize,
+    failures: &[(usize, Miss)],
+    placed: &[(usize, Option<(usize, usize)>)],
+) -> AgentError {
     AgentError::PatchConflict {
         path: path.to_string(),
-        reason,
+        reason: diagnose::report(total, failures, placed),
     }
 }
 
@@ -156,10 +164,13 @@ fn apply_one(
     edits: &mut Vec<AppliedEdit>,
     hunk: &PatchHunk,
     history: Option<&History<'_>>,
-) -> std::result::Result<Placed, String> {
+    prior: (&str, &[(usize, usize, usize)]),
+) -> std::result::Result<Placed, Miss> {
     if hunk.old_text.is_empty() {
         if !current.is_empty() {
-            return Err("`old_text` is empty (only valid when patching an empty file)".into());
+            return Err(Miss::plain(
+                "`old_text` is empty (only valid when patching an empty file)".into(),
+            ));
         }
         let new = hunk.new_text.clone();
         let new_nl = count_newlines(&new);
@@ -179,7 +190,7 @@ fn apply_one(
         .map(str::trim)
         .filter(|symbol| !symbol.is_empty())
     {
-        Some(symbol) => Some(symbol_scope(path, current.as_str(), symbol)?),
+        Some(symbol) => Some(symbol_scope(path, current.as_str(), symbol).map_err(Miss::plain)?),
         None => None,
     };
     match locate(
@@ -191,7 +202,8 @@ fn apply_one(
     ) {
         Ok(at) => Ok(Placed::Exact(place(current, edits, at, old, new))),
         Err(miss) => {
-            let nowhere = exact_positions(current.as_str(), &old, scope.as_ref()).is_empty();
+            let starts = exact_positions(current.as_str(), &old, scope.as_ref());
+            let nowhere = starts.is_empty();
             match history {
                 Some(history) if nowhere => {
                     let quote = (old.as_str(), new.as_str());
@@ -202,9 +214,20 @@ fn apply_one(
                         (hunk.start_line, scope.as_ref()),
                         quote,
                         (history, miss),
+                        prior,
                     )
                 }
-                _ => Err(miss),
+                Some(_) => {
+                    let number = number_in(current.as_str(), edits.as_slice());
+                    Err(diagnose::ambiguous(
+                        current.as_str(),
+                        &old,
+                        &starts,
+                        miss,
+                        &number,
+                    ))
+                }
+                None => Err(Miss::plain(miss)),
             }
         }
     }
@@ -230,9 +253,17 @@ fn place(
     }
 }
 
+/// The lines (1-based, before the patch) that a placed hunk covers.
+fn span_of(hunk: &PatchHunk) -> Option<(usize, usize)> {
+    let first = hunk.start_line?.get() as usize;
+    let rows = hunk.old_text.split_inclusive('\n').count().max(1);
+    Some((first, first + rows - 1))
+}
+
 /// A hunk whose `old_text` is nowhere in the text byte for byte: place it where its lines are the
 /// text's lines up to whitespace, note that the text already holds its replacement, or seat the
-/// lines it changes (see `rebase`). `miss` is the reason to report when none holds.
+/// lines it changes (see `rebase`), or expand its placeholder lines (see `elide`). `miss` is the
+/// reason to report when none holds.
 fn repair_hunk(
     path: &str,
     current: &mut String,
@@ -240,7 +271,8 @@ fn repair_hunk(
     (hint, scope): (Option<LineNumber>, Option<&Scope<'_>>),
     (old, new): (&str, &str),
     (history, miss): (&History<'_>, String),
-) -> std::result::Result<Placed, String> {
+    prior: (&str, &[(usize, usize, usize)]),
+) -> std::result::Result<Placed, Miss> {
     let range = scope.map(|s| s.span.clone());
     let spans = repair::text_spans(path, current.as_str());
     let windows = {
@@ -259,9 +291,10 @@ fn repair_hunk(
             hint,
             edits.as_slice(),
             scope.is_some(),
-        )?;
+        )
+        .map_err(Miss::plain)?;
         let Some(window) = windows.into_iter().find(|w| w.at == at) else {
-            return Err(miss);
+            return Err(Miss::plain(miss));
         };
         let how = window.how;
         let done = place(current, edits, window.at, window.old, window.new);
@@ -283,7 +316,28 @@ fn repair_hunk(
         let done = place(current, edits, window.at, window.old, window.new);
         return Ok(Placed::Repaired(done, how));
     }
-    Err(miss)
+    match elide::expand(current.as_str(), (old, new), range.as_ref()) {
+        Some(Ok(window)) => {
+            let how = window.how;
+            let done = place(current, edits, window.at, window.old, window.new);
+            return Ok(Placed::Repaired(done, how));
+        }
+        Some(Err(why)) => return Err(diagnose::elision(why)),
+        None => {}
+    }
+    if let Some(overlap) = diagnose::overlap(prior.0, old, hint_line, prior.1) {
+        return Err(overlap);
+    }
+    let aim = diagnose::Aim {
+        path,
+        text: current.as_str(),
+        old,
+        hint: hint_line,
+        scope: scope.map(|s| (s.symbol, s.first, s.last)),
+        reason: &miss,
+    };
+    let number = number_in(current.as_str(), edits.as_slice());
+    Err(diagnose::not_found(&aim, versions, &number))
 }
 
 /// Byte offsets where `old` occurs in `text`, inside the symbol's lines when there is a `scope`.
@@ -370,6 +424,15 @@ fn pre_patch_line(current: &str, at: usize, edits: &[AppliedEdit]) -> LineNumber
         .sum();
     let num = (cur_line - delta).max(1) as u64;
     LineNumber::new(num).unwrap_or(LineNumber::ONE)
+}
+
+/// Maps a 1-based line of `current` to the line it had before the patch.
+fn number_in<'a>(current: &'a str, edits: &'a [AppliedEdit]) -> impl Fn(usize) -> usize + 'a {
+    move |line| {
+        let line = LineNumber::new(line as u64).unwrap_or(LineNumber::ONE);
+        let at = byte_offset_of_line(current, line);
+        pre_patch_line(current, at, edits).get() as usize
+    }
 }
 
 /// Byte offset of the start of 1-based `target_line` (clamped to `text.len()`).

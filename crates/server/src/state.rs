@@ -8,15 +8,20 @@ use serde_json::{Value, json};
 
 use crate::common::{AgentError, Result, ServerConfig, Workspace};
 use crate::hints::ValidationHints;
+use crate::langtool::engine::lens::store::FactStore;
 use crate::steering::ToolUseHints;
 use crate::toolchain::Action;
 use crate::workflow::Project;
+
+/// Capacity of the in-memory fact store: how many files' parsed facts are kept.
+const FACT_STORE_CAPACITY: usize = 512;
 
 pub struct State {
     config: ServerConfig,
     project: Mutex<Option<Project>>,
     validation_hints: Mutex<ValidationHints>,
     tool_hints: Mutex<ToolUseHints>,
+    fact_store: FactStore,
 }
 
 impl State {
@@ -26,11 +31,17 @@ impl State {
             project: Mutex::new(None),
             validation_hints: Mutex::new(ValidationHints::default()),
             tool_hints: Mutex::new(ToolUseHints::default()),
+            fact_store: FactStore::new(FACT_STORE_CAPACITY),
         }
     }
 
     pub fn config(&self) -> &ServerConfig {
         &self.config
+    }
+
+    /// The shared fact store used by the overview tools.
+    pub(crate) fn fact_store(&self) -> &FactStore {
+        &self.fact_store
     }
 
     /// The registered project slot. A poisoned lock still holds consistent data: every write is

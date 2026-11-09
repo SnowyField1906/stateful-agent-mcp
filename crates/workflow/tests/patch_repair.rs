@@ -157,16 +157,17 @@ fn every_failing_hunk_is_reported_at_once_and_nothing_is_written() {
         .unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("2 of 4 hunks")
-            && message.contains("hunk 2:")
-            && message.contains("hunk 4:"),
+        message.contains("hunks 2 and 4 of 4 failed")
+            && message.contains("nothing was written")
+            && message.contains("hunk 2")
+            && message.contains("hunk 4"),
         "unexpected error: {message}"
     );
     assert_eq!(read(&tmp, "m.txt"), original);
 }
 
 #[test]
-fn one_failing_hunk_says_how_many_others_matched() {
+fn one_failing_hunk_says_which_others_were_verified() {
     let original = "a\nb\nc\n";
     let (tmp, state) = project("one-failure", "m.txt", original);
     let err = state
@@ -177,7 +178,9 @@ fn one_failing_hunk_says_how_many_others_matched() {
         .unwrap_err();
     let message = err.to_string();
     assert!(
-        message.contains("hunk 2:") && message.contains("the other 1 hunks matched"),
+        message.contains("hunk 2 of 2 failed")
+            && message.contains("nothing was written")
+            && (message.contains("1 verified") || message.contains("1 unverified")),
         "unexpected error: {message}"
     );
     assert_eq!(read(&tmp, "m.txt"), original);
@@ -517,4 +520,139 @@ fn blanks_inside_a_string_are_never_squeezed() {
         .unwrap_err();
     assert!(err.to_string().contains("not found"), "{err}");
     assert_eq!(read(&tmp, "a.rs"), text);
+}
+
+const GAPPED: &str = "fn a() {\n    one();\n    two();\n    three();\n    four();\n}\n";
+
+#[test]
+fn a_placeholder_line_stands_for_the_lines_between_head_and_tail() {
+    let (tmp, state) = project("elide-ok", "a.rs", GAPPED);
+    let out = state
+        .workflow_write_files(patch(
+            "a.rs",
+            vec![hunk(
+                "    one();\n    // ... existing code ...\n    four();\n",
+                "    one();\n    // ... existing code ...\n    FOUR();\n",
+                None,
+            )],
+        ))
+        .unwrap();
+    assert_eq!(
+        read(&tmp, "a.rs"),
+        "fn a() {\n    one();\n    two();\n    three();\n    FOUR();\n}\n"
+    );
+    assert!(
+        out.get("placeholder_warnings").is_none(),
+        "an expanded placeholder is not written as text: {out}"
+    );
+}
+
+#[test]
+fn a_placeholder_only_in_the_quote_is_diagnosed_and_nothing_is_written() {
+    let (tmp, state) = project("elide-lost", "a.rs", GAPPED);
+    let err = state
+        .workflow_write_files(patch(
+            "a.rs",
+            vec![hunk(
+                "    one();\n    // ... existing code ...\n    four();\n",
+                "    one();\n    FOUR();\n",
+                None,
+            )],
+        ))
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("elision") && message.contains("nothing was written"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(read(&tmp, "a.rs"), GAPPED);
+}
+
+#[test]
+fn a_placeholder_line_written_as_text_is_flagged() {
+    let (tmp, state) = project("placeholder-flag", "a.rs", "fn a() {\n    let x = 1;\n}\n");
+    let out = state
+        .workflow_write_files(patch(
+            "a.rs",
+            vec![hunk(
+                "    let x = 1;\n",
+                "    let x = 2;\n    // ... rest of function ...\n",
+                None,
+            )],
+        ))
+        .unwrap();
+    assert!(read(&tmp, "a.rs").contains("// ... rest of function ..."));
+    let warnings = out["placeholder_warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no placeholder_warnings in {out}"));
+    assert_eq!(warnings.len(), 1, "{out}");
+    assert!(
+        warnings[0].as_str().unwrap().contains("rest of function"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_quote_of_lines_an_earlier_hunk_rewrote_is_diagnosed_as_overlap() {
+    let original = "a\nb\nc\nd\n";
+    let (tmp, state) = project("overlap", "m.txt", original);
+    let err = state
+        .workflow_write_files(patch(
+            "m.txt",
+            vec![
+                hunk("b\nc\n", "B\nC\n", None),
+                hunk("c\nd\n", "x\ny\n", None),
+            ],
+        ))
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("overlap") && message.contains("rewrote") && message.contains("hunk 1"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(read(&tmp, "m.txt"), original);
+}
+
+#[test]
+fn an_exact_quote_found_twice_says_what_tells_the_places_apart() {
+    let text = "if x {\n    foo();\n}\nif y {\n    foo();\n}\n";
+    let (tmp, state) = project("exact-twice", "b.txt", text);
+    let err = state
+        .workflow_write_files(patch(
+            "b.txt",
+            vec![hunk("    foo();\n", "    bar();\n", None)],
+        ))
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("ambiguous")
+            && message.contains("matches 2 places")
+            && message.contains("at line"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(read(&tmp, "b.txt"), text);
+}
+
+#[test]
+fn a_refused_patch_names_who_changed_the_lines() {
+    let (tmp, state) = project("stale-cause", "a.rs", NUMBERED);
+    show(&state, "a.rs");
+    let edited = NUMBERED.replace("let four = 4;", "let four = 40;");
+    fs::write(tmp.root.join("a.rs"), &edited).unwrap();
+    let err = state
+        .workflow_write_files(patch(
+            "a.rs",
+            vec![hunk(
+                "    let three = 3;\n    let four = 4;\n    let five = 5;\n",
+                "    let three = 3;\n    let four = 44;\n    let five = 5;\n",
+                None,
+            )],
+        ))
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("outside") && message.contains("nothing was written"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(read(&tmp, "a.rs"), edited);
 }

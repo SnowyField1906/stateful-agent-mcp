@@ -158,6 +158,10 @@ pub struct NoteDto {
     /// Referenced notes, expanded recursively.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ref_notes: Vec<NoteDto>,
+    /// IDs of referenced notes that the handover leaves out below its depth limit; `get_notes`
+    /// returns them with the whole chain.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub not_expanded: Vec<String>,
 }
 
 /// A handover task as returned to the agent.

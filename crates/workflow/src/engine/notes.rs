@@ -89,15 +89,28 @@ impl Project {
 
     /// All notes of `turn` as DTOs, with `ref_notes` expanded recursively.
     pub(crate) fn note_dtos(&self, turn: &TurnRecord) -> Vec<NoteDto> {
+        self.note_dtos_to(turn, usize::MAX)
+    }
+
+    /// All notes of `turn` as DTOs for the handover: a note shows the notes it references, and
+    /// those show nothing further; `get_notes` returns the whole chain.
+    pub(crate) fn handover_note_dtos(&self, turn: &TurnRecord) -> Vec<NoteDto> {
+        self.note_dtos_to(turn, 1)
+    }
+
+    fn note_dtos_to(&self, turn: &TurnRecord, depth: usize) -> Vec<NoteDto> {
         (0..turn.notes.len())
-            .filter_map(|idx| self.note_dto(turn, idx))
+            .filter_map(|idx| {
+                let mut seen = BTreeSet::new();
+                self.resolve_note_dto(turn, idx, &mut seen, depth)
+            })
             .collect()
     }
 
     /// One note of `turn` as a DTO, with `ref_notes` expanded recursively.
     pub(crate) fn note_dto(&self, turn: &TurnRecord, idx: usize) -> Option<NoteDto> {
         let mut seen = BTreeSet::new();
-        self.resolve_note_dto(turn, idx, &mut seen)
+        self.resolve_note_dto(turn, idx, &mut seen, usize::MAX)
     }
 
     fn resolve_note_dto(
@@ -105,12 +118,13 @@ impl Project {
         turn: &TurnRecord,
         idx: usize,
         seen: &mut BTreeSet<String>,
+        depth: usize,
     ) -> Option<NoteDto> {
         let note = turn.notes.get(idx)?;
         let id = TurnRecord::note_id(turn.key, idx);
         seen.insert(id.clone());
-        let ref_notes = note
-            .ref_notes
+        let refs: &[String] = if depth == 0 { &[] } else { &note.ref_notes };
+        let ref_notes = refs
             .iter()
             .filter_map(|raw| {
                 let Sel::Note(k, i) = parse_item(raw)? else {
@@ -121,13 +135,19 @@ impl Project {
                     return None;
                 }
                 let target = self.turn(k)?;
-                self.resolve_note_dto(target, i, seen)
+                self.resolve_note_dto(target, i, seen, depth - 1)
             })
             .collect();
+        let not_expanded = if depth == 0 {
+            note.ref_notes.clone()
+        } else {
+            Vec::new()
+        };
         Some(NoteDto {
             id,
             content: note.content.clone(),
             ref_notes,
+            not_expanded,
         })
     }
 }

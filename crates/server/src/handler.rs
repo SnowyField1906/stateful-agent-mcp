@@ -17,7 +17,7 @@ use crate::filesystem::tools::{
 };
 use crate::langtool::tools::{
     self as langtool, FindReferencesParams, FindSymbolsParams, ReadFileParams, RunActionParams,
-    ViewCallgraphParams,
+    SummarizeCodebaseParams, SummarizeFeatureParams, SummarizeSymbolParams, ViewCallgraphParams,
 };
 use crate::workflow::tools::{
     self as workflow, GetFilesDiffParams, GetFilesHistoryParams, GetItemsParams, GetTurnsParams,
@@ -28,6 +28,9 @@ use crate::workflow::tools::{
 /// Sent to the client at MCP initialization.
 const INSTRUCTIONS: &str = "\
 Call `workflow_register` first: it returns the usage guide, the project's instructions and the previous turn's handover. \
+Use `langtool_summarize_codebase` to explore a codebase or sub-tree: it returns layers, doors, a start path, the work front and a folder tree in one call; its `front:` row resolves open tasks. \
+Use `langtool_summarize_symbol` for one definition: its signature, role, what it uses, what uses it and its kin in one call, before `langtool_read_file`. \
+Use `langtool_summarize_feature` when the task names a behaviour: the slice of code around it, the way in from an entry point and a read plan. \
 The read tools (`filesystem_*`, `langtool_read_file`, `langtool_find_*`, `langtool_view_callgraph`) also take absolute paths and then need no registered project. \
 Explore code with `langtool_find_symbols`, `langtool_read_file` (`fold_level` for an outline, `symbol` for one definition), `langtool_find_references` and `langtool_view_callgraph` before reading whole files. \
 Find earlier work with `workflow_search`, `workflow_get_turns`, `workflow_get_files_diff` and `workflow_get_files_history`. \
@@ -117,6 +120,60 @@ impl AgentServer {
     ) -> CallToolResult {
         json_result(
             self.run(move |s| s.workflow_write_files(p)).await,
+            self.max_bytes(),
+        )
+    }
+
+    #[tool(
+        description = langtool::summarize_codebase::DESCRIPTION,
+        annotations(
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn langtool_summarize_codebase(
+        &self,
+        Parameters(p): Parameters<SummarizeCodebaseParams>,
+    ) -> CallToolResult {
+        text_result(
+            self.run(move |s| s.langtool_summarize_codebase(p)).await,
+            self.max_bytes(),
+        )
+    }
+
+    #[tool(
+        description = langtool::summarize_symbol::DESCRIPTION,
+        annotations(
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn langtool_summarize_symbol(
+        &self,
+        Parameters(p): Parameters<SummarizeSymbolParams>,
+    ) -> CallToolResult {
+        text_result(
+            self.run(move |s| s.langtool_summarize_symbol(p)).await,
+            self.max_bytes(),
+        )
+    }
+
+    #[tool(
+        description = langtool::summarize_feature::DESCRIPTION,
+        annotations(
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn langtool_summarize_feature(
+        &self,
+        Parameters(p): Parameters<SummarizeFeatureParams>,
+    ) -> CallToolResult {
+        text_result(
+            self.run(move |s| s.langtool_summarize_feature(p)).await,
             self.max_bytes(),
         )
     }

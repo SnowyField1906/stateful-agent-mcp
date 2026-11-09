@@ -95,7 +95,13 @@ impl FactStore {
                 return Some(Arc::clone(&entry.facts));
             }
         }
-        let read = facts(syntax, &read_searchable(abs)?)?;
+        let mut read = facts(syntax, &read_searchable(abs)?)?;
+        // A file of a test folder is test code whole: its functions carry no `mod tests` around them.
+        if syntax.is_test_path(label) {
+            for def in &mut read.defs {
+                def.symbol.test = true;
+            }
+        }
         let read = Arc::new(read);
         let mut inner = self.lock();
         inner.clock += 1;

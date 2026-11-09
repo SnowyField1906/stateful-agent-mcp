@@ -116,21 +116,31 @@ impl From<Vec<String>> for Names {
     }
 }
 
-const LIST_HINT: &str = r#"expected an array of objects, for example [{"op": "Append", ...}]"#;
+/// What a list parameter of item type `T` accepts, named after `T` so that no tool shows the
+/// example of another.
+fn list_hint<T>() -> String {
+    let item = std::any::type_name::<T>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("item");
+    format!(
+        "expected an array of objects (`{item}`), one object, or a JSON string holding either; \
+         check that the brackets and braces balance"
+    )
+}
 
 /// A list of `T` from an array, a single object, or a JSON string holding either. Items that do
 /// not parse are reported by position.
 fn parse_lenient<T: DeserializeOwned>(value: Value) -> Result<Vec<T>, String> {
     let value = match value {
-        Value::String(raw) => {
-            serde_json::from_str::<Value>(&raw).map_err(|_| LIST_HINT.to_string())?
-        }
+        Value::String(raw) => serde_json::from_str::<Value>(&raw)
+            .map_err(|e| format!("not valid JSON ({e}); {}", list_hint::<T>()))?,
         other => other,
     };
     let items = match value {
         Value::Array(items) => items,
         object @ Value::Object(_) => vec![object],
-        _ => return Err(LIST_HINT.to_string()),
+        _ => return Err(list_hint::<T>()),
     };
     items
         .into_iter()

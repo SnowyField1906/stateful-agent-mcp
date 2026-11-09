@@ -2,9 +2,34 @@
 
 use tree_sitter::Node;
 
+use crate::grammar::is_field;
 use crate::{Grammar, Ident, line_span, node_text};
 
 use super::RustSyntax;
+
+/// Pattern nodes that bind the names written inside them.
+const PATTERNS: &[&str] = &[
+    "tuple_pattern",
+    "tuple_struct_pattern",
+    "struct_pattern",
+    "field_pattern",
+    "slice_pattern",
+    "reference_pattern",
+    "ref_pattern",
+    "mut_pattern",
+    "or_pattern",
+    "captured_pattern",
+    "match_pattern",
+];
+
+/// Nodes whose `pattern` field binds the names written in it.
+const BINDERS: &[&str] = &[
+    "let_declaration",
+    "let_condition",
+    "parameter",
+    "for_expression",
+    "match_arm",
+];
 
 impl Grammar for RustSyntax {
     fn grammar(&self) -> tree_sitter::Language {
@@ -88,6 +113,39 @@ impl Grammar for RustSyntax {
             "field_identifier" => Some(Ident::Field),
             _ => None,
         }
+    }
+
+    fn is_binding(&self, node: Node<'_>) -> bool {
+        if node.kind() != "identifier" {
+            return false;
+        }
+        let mut inner = node;
+        while let Some(parent) = inner.parent() {
+            let kind = parent.kind();
+            if kind == "closure_parameters" {
+                return true;
+            }
+            if kind == "tuple_struct_pattern" && is_field(parent, "type", inner) {
+                return false;
+            }
+            if BINDERS.contains(&kind) {
+                return is_field(parent, "pattern", inner);
+            }
+            if !PATTERNS.contains(&kind) {
+                return false;
+            }
+            inner = parent;
+        }
+        false
+    }
+
+    fn is_path(&self, node: Node<'_>) -> bool {
+        node.parent().is_some_and(|parent| {
+            matches!(
+                parent.kind(),
+                "scoped_identifier" | "scoped_type_identifier"
+            )
+        })
     }
 
     fn text_kinds(&self) -> &'static [&'static str] {

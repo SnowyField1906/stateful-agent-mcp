@@ -12,6 +12,15 @@ use crate::workflow::tools::PatchMiss;
 /// Symbol searches by `filesystem_grep` in a row after which `langtool_find_references` is
 /// suggested.
 const SYMBOL_GREPS_BEFORE_HINT: usize = 2;
+/// `filesystem_ls` calls on a directory followed by `langtool_find_symbols` on it without a
+/// summary in between, at which the hint suggests `langtool_summarize_codebase`.
+const LS_BEFORE_SUMMARIZE_HINT: usize = 1;
+/// Lookups of one name in a row by `langtool_find_symbols`, `langtool_find_references` and
+/// `langtool_view_callgraph` at which the hint suggests `langtool_summarize_symbol`.
+const LOOKUPS_BEFORE_SUMMARIZE_SYMBOL_HINT: usize = 3;
+/// Searches by words, not by a code identifier, in a row at which the hint suggests
+/// `langtool_summarize_feature`.
+const WORD_GREPS_BEFORE_FEATURE_HINT: usize = 3;
 /// Hints about raw reads that may go unheeded before they stop, until the agent reads an outline
 /// or a symbol.
 const IGNORED_READ_HINTS_LIMIT: usize = 2;
@@ -25,6 +34,17 @@ pub(crate) struct ToolUseHints {
     symbol_greps: usize,
     grep_hinted: bool,
     ignored_read_hints: usize,
+    /// Count of `filesystem_ls` calls on directories since the last summary or symbol call.
+    ls_streak: usize,
+    ls_hinted: bool,
+    /// The bare name, lowercased, that the current run of symbol lookups is about.
+    lookup_name: String,
+    /// Symbol lookups of `lookup_name` in a row.
+    lookups: usize,
+    lookup_hinted: bool,
+    /// Greps for words rather than identifiers since the last summary.
+    word_greps: usize,
+    word_hinted: bool,
     /// The turn that `patch_misses` counts in.
     miss_turn: String,
     /// Failed patches per file since a write last changed the file, in turn `miss_turn`.
@@ -36,12 +56,86 @@ impl ToolUseHints {
         *self = Self::default();
     }
 
+    /// A `filesystem_ls` ran on a directory. After one such call without an intervening summary,
+    /// suggest `langtool_summarize_codebase`, once per streak.
+    pub(crate) fn after_ls(&mut self, is_dir: bool) -> Option<String> {
+        if !is_dir {
+            self.ls_streak = 0;
+            self.ls_hinted = false;
+            return None;
+        }
+        self.ls_streak += 1;
+        if self.ls_streak <= LS_BEFORE_SUMMARIZE_HINT || self.ls_hinted {
+            return None;
+        }
+        self.ls_hinted = true;
+        Some(
+            "langtool_summarize_codebase gives layers, doors and the start path in one call"
+                .to_string(),
+        )
+    }
+
+    /// A summary tool ran: reset the ls streak.
+    pub(crate) fn end_ls_streak(&mut self) {
+        self.ls_streak = 0;
+        self.ls_hinted = false;
+    }
+
+    /// A symbol lookup ran for `names`. The third lookup of one name in a row suggests
+    /// `langtool_summarize_symbol`, once per run. Several names, or a different name, start over.
+    pub(crate) fn after_symbol_lookup(&mut self, names: &[String]) -> Option<String> {
+        let [name] = names else {
+            self.end_lookup_streak();
+            return None;
+        };
+        let bare = name
+            .rsplit(|c: char| matches!(c, ':' | '.' | '/'))
+            .next()
+            .unwrap_or(name)
+            .to_lowercase();
+        if bare.is_empty() {
+            self.end_lookup_streak();
+            return None;
+        }
+        if bare != self.lookup_name {
+            self.lookup_name = bare;
+            self.lookups = 0;
+            self.lookup_hinted = false;
+        }
+        self.lookups += 1;
+        if self.lookups < LOOKUPS_BEFORE_SUMMARIZE_SYMBOL_HINT || self.lookup_hinted {
+            return None;
+        }
+        self.lookup_hinted = true;
+        Some(
+            "langtool_summarize_symbol gives the definition, what it uses and what uses it in one call"
+                .to_string(),
+        )
+    }
+
+    /// A summary tool ran, or a lookup of several names: the run of lookups is over.
+    pub(crate) fn end_lookup_streak(&mut self) {
+        self.lookup_name.clear();
+        self.lookups = 0;
+        self.lookup_hinted = false;
+        self.word_greps = 0;
+        self.word_hinted = false;
+    }
+
     /// A grep ran; `symbol_search` says whether it looked up a code identifier in code files.
     /// The second such search in a row suggests the symbol tools, once for the streak.
     pub(crate) fn after_grep(&mut self, symbol_search: bool) -> Option<String> {
         if !symbol_search {
             self.end_grep_streak();
-            return None;
+            self.word_greps += 1;
+            if self.word_greps < WORD_GREPS_BEFORE_FEATURE_HINT || self.word_hinted {
+                return None;
+            }
+            self.word_hinted = true;
+            return Some(
+                "langtool_summarize_feature finds the code behind a behaviour from words in one call"
+                    .to_string(),
+            );
         }
         self.symbol_greps += 1;
         if self.symbol_greps < SYMBOL_GREPS_BEFORE_HINT || self.grep_hinted {
@@ -77,7 +171,8 @@ impl ToolUseHints {
         }
         self.ignored_read_hints += 1;
         Some(format!(
-            "{} has {} lines; fold_level=0 gives an outline, symbol='Name' reads one definition.",
+            "{} has {} lines; fold_level=0 gives an outline, symbol='Name' reads one definition, \
+             langtool_summarize_symbol shows what it uses and what uses it.",
             raw.path, raw.lines
         ))
     }

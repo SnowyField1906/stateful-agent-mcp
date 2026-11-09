@@ -94,11 +94,22 @@ pub fn facts(syntax: &dyn Syntax, source: &str) -> Option<FileFacts> {
     })
 }
 
+/// One identifier written below a definition.
+struct Seen {
+    line: usize,
+    text: String,
+    role: Role,
+    /// It introduces a local name (a `let`, a parameter, a pattern).
+    binds: bool,
+    /// It is a segment of a path, so it names a definition and never a local variable.
+    pathed: bool,
+}
+
 /// What the walk saw below one definition, before the import aliases are known in full.
 #[derive(Default)]
 struct Raw {
-    /// Identifiers as (line, text, role), in source order.
-    seen: Vec<(usize, String, Role)>,
+    /// Identifiers in source order.
+    seen: Vec<Seen>,
     /// The calls made below the definition, to tell how a used name was written.
     sites: Vec<CallSite>,
     /// Names of the definitions written inside it.
@@ -185,7 +196,13 @@ impl Walk<'_> {
                 self.idents.insert(text.to_string());
                 if let Some(owner) = self.owner() {
                     let how = role(node, syntax, self.source);
-                    self.raw[owner].seen.push((line, text.to_string(), how));
+                    self.raw[owner].seen.push(Seen {
+                        line,
+                        text: text.to_string(),
+                        role: how,
+                        binds: syntax.is_binding(node),
+                        pathed: syntax.is_path(node),
+                    });
                 }
             }
             if let Some(site) = syntax.call_site(node, self.source) {
@@ -222,14 +239,32 @@ fn used_names(raw: &Raw, aliases: &[Alias]) -> Vec<Use> {
     let defined: BTreeSet<&str> = raw
         .seen
         .iter()
-        .filter(|(_, _, how)| *how == Role::Def)
-        .map(|(_, text, _)| text.as_str())
+        .filter(|seen| seen.role == Role::Def)
+        .map(|seen| seen.text.as_str())
         .chain(raw.local.iter().map(String::as_str))
         .collect();
+    // A local variable is not a mention of a definition that happens to share its name, unless the
+    // use is a call or a path.
+    let bound: BTreeSet<&str> = raw
+        .seen
+        .iter()
+        .filter(|seen| seen.binds)
+        .map(|seen| seen.text.as_str())
+        .collect();
     let mut uses: Vec<Use> = Vec::new();
-    for (line, text, how) in &raw.seen {
+    for Seen {
+        line,
+        text,
+        role: how,
+        pathed,
+        ..
+    } in &raw.seen
+    {
         if matches!(how, Role::Def | Role::Import | Role::Field) || defined.contains(text.as_str())
         {
+            continue;
+        }
+        if *how == Role::Use && !pathed && bound.contains(text.as_str()) {
             continue;
         }
         let name = resolve(aliases, text);

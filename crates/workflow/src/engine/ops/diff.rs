@@ -137,22 +137,20 @@ pub(super) fn lcs_regions(a: &[&str], b: &[&str]) -> Vec<(usize, usize, usize, u
     regions
 }
 
-/// Lines `(added, removed)` by a hunk, ignoring unchanged context lines inside it.
+/// Lines `(added, removed)` by a hunk, ignoring every unchanged line inside it, also those between
+/// two changed lines, so that the count equals the net diff the ledger records for the same edit.
 pub fn hunk_stats(hunk: &PatchHunk) -> (usize, usize) {
-    let old: Vec<&str> = hunk.old_text.split_inclusive('\n').collect();
-    let new: Vec<&str> = hunk.new_text.split_inclusive('\n').collect();
-    let mut prefix = 0;
-    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < old.len() - prefix
-        && suffix < new.len() - prefix
-        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    (new.len() - prefix - suffix, old.len() - prefix - suffix)
+    line_regions(&hunk.old_text, &hunk.new_text)
+        .into_iter()
+        .fold(
+            (0, 0),
+            |(added, removed), (old_start, old_end, new_start, new_end)| {
+                (
+                    added + (new_end - new_start),
+                    removed + (old_end - old_start),
+                )
+            },
+        )
 }
 
 /// Number of leading and trailing lines that `a` and `b` share.

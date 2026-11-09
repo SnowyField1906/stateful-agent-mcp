@@ -2,9 +2,30 @@
 
 use tree_sitter::Node;
 
+use crate::grammar::is_field;
 use crate::{Grammar, Ident, node_text};
 
 use super::PythonSyntax;
+
+/// Pattern nodes that bind the names written inside them.
+const PATTERNS: &[&str] = &[
+    "pattern_list",
+    "tuple_pattern",
+    "list_pattern",
+    "list_splat_pattern",
+    "dictionary_splat_pattern",
+];
+
+/// Nodes and the field that binds the names written in it.
+const BINDERS: &[(&str, &str)] = &[
+    ("for_statement", "left"),
+    ("for_in_clause", "left"),
+    ("assignment", "left"),
+    ("augmented_assignment", "left"),
+    ("named_expression", "name"),
+    ("default_parameter", "name"),
+    ("typed_default_parameter", "name"),
+];
 
 impl Grammar for PythonSyntax {
     fn grammar(&self) -> tree_sitter::Language {
@@ -56,6 +77,27 @@ impl Grammar for PythonSyntax {
 
     fn identifier(&self, node: Node<'_>) -> Option<Ident> {
         (node.kind() == "identifier").then_some(Ident::Value)
+    }
+
+    fn is_binding(&self, node: Node<'_>) -> bool {
+        if node.kind() != "identifier" {
+            return false;
+        }
+        let mut inner = node;
+        while let Some(parent) = inner.parent() {
+            let kind = parent.kind();
+            if matches!(kind, "parameters" | "lambda_parameters" | "typed_parameter") {
+                return true;
+            }
+            if let Some(&(_, field)) = BINDERS.iter().find(|(binder, _)| *binder == kind) {
+                return is_field(parent, field, inner);
+            }
+            if !PATTERNS.contains(&kind) {
+                return false;
+            }
+            inner = parent;
+        }
+        false
     }
 
     fn text_kinds(&self) -> &'static [&'static str] {

@@ -93,7 +93,7 @@ fn has_manifest(syntax: &dyn Syntax, dir: &Path) -> bool {
 }
 
 /// `path` without `.` and `..` components, without touching the disk.
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

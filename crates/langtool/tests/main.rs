@@ -7,5 +7,6 @@ mod lens_facts;
 mod lens_graph;
 mod read_file;
 mod run_action;
+mod summarize_codebase;
 mod support;
 mod view_callgraph;

@@ -42,6 +42,10 @@ pub(crate) struct Batch {
     /// A warning only: an edit can be one step of a change that is valid once complete.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub syntax_warnings: Vec<String>,
+    /// Placeholder lines such as `// ... existing code ...` that a `Patch` wrote as text because
+    /// the file did not hold them: they may stand in for code the agent meant to keep.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub placeholder_warnings: Vec<String>,
     /// Exact file paths changed by this batch; used internally without duplicating MCP output.
     #[serde(skip)]
     pub changed_paths: Vec<String>,
@@ -56,6 +60,7 @@ impl Batch {
             format_warnings: Vec::new(),
             reshaped: Vec::new(),
             syntax_warnings: Vec::new(),
+            placeholder_warnings: Vec::new(),
             changed_paths: Vec::new(),
         }
     }
@@ -88,6 +93,7 @@ impl Project {
             return Ok(Batch::unchanged(updates));
         }
         let syntax_warnings = syntax_warnings(&overlay, tracker.syntax_suspects);
+        let placeholder_warnings = tracker.placeholder_warnings;
         if let Err(err) = overlay.commit() {
             overlay.revert();
             return Err(err);
@@ -107,6 +113,7 @@ impl Project {
             format_warnings: format_report.warnings,
             reshaped,
             syntax_warnings,
+            placeholder_warnings,
             changed_paths: overlay.changed().map(|(path, _)| path.clone()).collect(),
         })
     }

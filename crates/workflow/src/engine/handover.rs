@@ -35,6 +35,20 @@ pub fn instructions(project: &Project, mode: AgentUseMode) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
+/// Said in the handover when a note leaves referenced notes out below the depth limit.
+const NOTES_CUT_HINT: &str = "Notes show their references one level deep; `not_expanded` lists the IDs left out. `workflow_get_notes` with a note ID (or the turn) returns the whole chain.";
+
+/// Whether any note of `notes`, or of the notes it references, lists references left out.
+fn has_cut(notes: &[Value]) -> bool {
+    notes.iter().any(|note| {
+        note.get("not_expanded").is_some()
+            || note
+                .get("ref_notes")
+                .and_then(Value::as_array)
+                .is_some_and(|inner| has_cut(inner))
+    })
+}
+
 /// The latest non-empty turn before the active one, as shown to the agent. When it recorded no
 /// handover tasks or notes, those of the turns before it are shown with the turn they come from.
 pub fn last_turn(project: &Project) -> Option<Value> {
@@ -54,8 +68,15 @@ pub fn last_turn(project: &Project) -> Option<Value> {
         && let Some(earlier) = latest_notes_before(project, turn.key)
         && let Some(obj) = last.as_object_mut()
     {
-        obj.insert("notes".into(), json!(project.note_dtos(earlier)));
+        obj.insert("notes".into(), json!(project.handover_note_dtos(earlier)));
         obj.insert("notes_from_turn".into(), json!(earlier.key.to_string()));
+    }
+    let cut = last
+        .get("notes")
+        .and_then(Value::as_array)
+        .is_some_and(|notes| has_cut(notes));
+    if cut && let Some(obj) = last.as_object_mut() {
+        obj.insert("notes_hint".into(), json!(NOTES_CUT_HINT));
     }
     Some(last)
 }
@@ -128,7 +149,7 @@ fn latest_tasks_before(
 fn turn_json(project: &Project, turn: &TurnRecord) -> Value {
     let mut m = turn.header();
     if !turn.notes.is_empty() {
-        m.insert("notes".into(), json!(project.note_dtos(turn)));
+        m.insert("notes".into(), json!(project.handover_note_dtos(turn)));
     }
     if !turn.updates.is_empty() {
         let updates: Vec<String> = turn.updates.iter().map(op_summary).collect();
