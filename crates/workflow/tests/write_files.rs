@@ -338,6 +338,62 @@ fn write_files_formats_matching_files_and_records_the_formatted_text() {
     assert_eq!(fs::read_to_string(tmp.root.join("b.rs")).unwrap(), "abc\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn write_files_echoes_the_lines_a_formatter_reshaped() {
+    let tmp = TempProject::new("reshaped");
+    let state = Session::new(ServerConfig::default());
+    state
+        .workflow_register(RegisterParams {
+            folder_path: tmp.path_str(),
+            show_instructions: Some(false),
+            show_last_turn_info: Some(false),
+        })
+        .unwrap();
+    let write = |ops: Vec<FileOp>| {
+        state
+            .workflow_write_files(WriteFilesParams { title: None, ops })
+            .unwrap()
+    };
+    let lines =
+        |n: usize| -> String { (1..=n).map(|i| format!("fn f{i}(x:i32) {{}}\n")).collect() };
+
+    // Without a formatter nothing is reshaped.
+    let out = write(vec![FileOp::Create {
+        path: "a.rs".into(),
+        content: lines(3),
+    }]);
+    assert!(out.get("reshaped").is_none());
+
+    // The formatter rewrites all three lines; only the patched one is inside the edited range.
+    fs::write(
+        tmp.root.join(".AGENTS").join("config.toml"),
+        "[rust]\nformat = \"sed 's/:i32/: i32/g'\"\n",
+    )
+    .unwrap();
+    let out = write(vec![FileOp::Patch {
+        path: "a.rs".into(),
+        hunks: vec![hunk("fn f2(x:i32) {}\n", "fn f2(x:i32, y:i32) {}\n", None)],
+    }]);
+    assert_eq!(
+        out["reshaped"],
+        json!([
+            "a.rs 2: fn f2(x:i32, y:i32) {} -> fn f2(x: i32, y: i32) {}",
+            "2 lines rewritten outside the edited ranges"
+        ])
+    );
+
+    // A new file is edited throughout; the rows are capped and the rest is counted.
+    let out = write(vec![FileOp::Create {
+        path: "b.rs".into(),
+        content: lines(8),
+    }]);
+    let rows = out["reshaped"].as_array().unwrap();
+    assert_eq!(rows.len(), 7);
+    assert_eq!(rows[0], "b.rs 1: fn f1(x:i32) {} -> fn f1(x: i32) {}");
+    assert_eq!(rows[6], "2 more rows");
+}
+
 #[test]
 fn symbol_ops_edit_whole_definitions_and_the_ledger_records_hunks() {
     let tmp = TempProject::new("symbol-ops");

@@ -6,8 +6,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Project;
-use crate::common::Result;
 use crate::common::params::lenient_vec;
+use crate::common::{AgentError, Result};
+use crate::engine::files::PatchMiss;
 use crate::engine::ops::FileOp;
 
 pub const DESCRIPTION: &str = r#"Apply file operations atomically in the active turn. Paths are project-relative.
@@ -19,7 +20,7 @@ pub const DESCRIPTION: &str = r#"Apply file operations atomically in the active 
 - `Move {path, to_path}`: rename a file or directory.
 - `Delete {path}`: remove a file or directory.
 - `Recover {id, to_path?}`: restore from an update ID (`01.02.update.src/a.rs`) or a turn, session or range selector; `to_path` limits it to a file or directory prefix.
-A formatter configured for a language rewrites the files written in it, so a later `Patch` must match the formatted text. Repeated calls in one turn merge into one net diff. Optional `title` names the active turn when it has none; a titled turn keeps its title. Returns one line per operation, such as `Patch src/a.rs +3 -1 at 12`."#;
+Repeated calls in one turn merge into one net diff. Optional `title` names the active turn when it has none; a titled turn keeps its title. Returns one line per operation, such as `Patch src/a.rs +3 -1 at 12`."#;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFilesParams {
@@ -34,12 +35,12 @@ pub struct WriteFilesParams {
 }
 
 pub fn write_files(project: &mut Project, p: WriteFilesParams) -> Result<Value> {
-    write_files_with_paths(project, p).map(|(out, _)| out)
+    write_files_with_paths(project, &p).map(|(out, _)| out)
 }
 
 pub fn write_files_with_paths(
     project: &mut Project,
-    p: WriteFilesParams,
+    p: &WriteFilesParams,
 ) -> Result<(Value, Vec<String>)> {
     let external = project.sync_external_edits()?;
     let batch = project.apply_files(&p.ops)?;
@@ -52,4 +53,9 @@ pub fn write_files_with_paths(
     }
     title.report(project.active_turn()?, &mut out);
     Ok((out, changed_paths))
+}
+
+/// The patch miss behind a failed `write_files` call of `p`, when `err` is a patch conflict.
+pub fn patch_miss(project: &Project, p: &WriteFilesParams, err: &AgentError) -> Option<PatchMiss> {
+    project.patch_miss(err, &p.ops)
 }

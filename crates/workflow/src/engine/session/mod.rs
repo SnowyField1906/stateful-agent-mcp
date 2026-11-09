@@ -4,5 +4,6 @@
 mod format;
 pub mod model;
 pub mod parse;
+pub(crate) mod seen;
 pub mod serialize;
 pub mod store;

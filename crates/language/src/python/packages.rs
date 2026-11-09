@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use toml::Value;
+
 use crate::{Origin, Package, Packages, locate, tables};
 
 use super::PythonSyntax;
@@ -35,6 +37,50 @@ impl Packages for PythonSyntax {
             None => Origin::Unknown,
         }
     }
+
+    fn entrypoints(&self, dir: &Path) -> Vec<PathBuf> {
+        entrypoints(dir)
+    }
+}
+
+/// The modules that `[project.scripts]` and `[project.gui-scripts]` name, and the `__main__.py` of
+/// the project folder, of its `src/` and of the packages directly in them.
+fn entrypoints(dir: &Path) -> Vec<PathBuf> {
+    let roots = [dir.to_path_buf(), dir.join("src")];
+    let mut found = Vec::new();
+    if let Some(manifest) = tables::read(&dir.join("pyproject.toml")) {
+        for key in ["scripts", "gui-scripts"] {
+            let Some(scripts) = tables::section(&manifest, &["project", key]) else {
+                continue;
+            };
+            for target in scripts.values().filter_map(Value::as_str) {
+                // `package.module:function`
+                let module = target
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .replace('.', "/");
+                if module.is_empty() {
+                    continue;
+                }
+                for base in &roots {
+                    found.push(base.join(format!("{module}.py")));
+                    found.push(base.join(&module).join("__init__.py"));
+                }
+            }
+        }
+    }
+    for base in &roots {
+        found.push(base.join("__main__.py"));
+        for entry in std::fs::read_dir(base).into_iter().flatten().flatten() {
+            found.push(entry.path().join("__main__.py"));
+        }
+    }
+    found.retain(|path| path.is_file());
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// The module or package folder named `root` in a source folder that holds `from` or lies above

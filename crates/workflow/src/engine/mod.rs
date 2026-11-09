@@ -5,7 +5,8 @@
 //! - `session`: turns, notes and tasks as data, and their Markdown storage under `.AGENTS/`.
 //! - `project`: the loaded [`Project`]; `selector` and `items`: selectors, and what notes, tasks
 //!   and turn metadata share; `instructions`: the usage-guide texts; `handover`: what opening a
-//!   session reports (the usage guide, the previous turn, the sessions); `lookup`: finding text in
+//!   session reports (the usage guide, the previous turn, the sessions); `front`: where the latest
+//!   sessions stopped, for the code tools; `lookup`: finding text in
 //!   the recorded titles, notes and tasks.
 //! - `external`, `files`, `notes`, `tasks`, `turns`: what the mutating tools do to a `Project`
 //!   (record edits made outside the ledger, apply a file batch, note ops, task ops; start, open,
@@ -17,6 +18,7 @@
 
 pub mod external;
 pub mod files;
+pub mod front;
 pub mod handover;
 pub mod instructions;
 pub mod items;

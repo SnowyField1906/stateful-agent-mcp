@@ -9,7 +9,7 @@ use crate::common::LineNumber;
 use super::PatchHunk;
 
 /// Above this many LCS table cells, the changed middle becomes a single hunk.
-const LCS_CELL_LIMIT: usize = 4_000_000;
+pub(super) const LCS_CELL_LIMIT: usize = 4_000_000;
 
 /// Hunks transforming `before` into `after`, with `lines` set to the 1-based line range in
 /// `before`. Returns no hunks when the texts are equal.
@@ -36,28 +36,7 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
     let a: Vec<&str> = before.split_inclusive('\n').collect();
     let b: Vec<&str> = after.split_inclusive('\n').collect();
 
-    let mut prefix = 0;
-    while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < a.len() - prefix
-        && suffix < b.len() - prefix
-        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    let (a_mid, b_mid) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
-
-    let raw_regions: Vec<(usize, usize, usize, usize)> =
-        if a_mid.len().saturating_mul(b_mid.len()) <= LCS_CELL_LIMIT {
-            lcs_regions(a_mid, b_mid)
-                .into_iter()
-                .map(|(o0, o1, n0, n1)| (o0 + prefix, o1 + prefix, n0 + prefix, n1 + prefix))
-                .collect()
-        } else {
-            vec![(prefix, a.len() - suffix, prefix, b.len() - suffix)]
-        };
+    let raw_regions = diff_regions(&a, &b);
 
     // Anchor pure insertions (`o0 == o1`) and pure deletions (`n0 == n1`) on an adjacent
     // unchanged line so both `old_text` and `new_text` are non-empty, and merge regions that
@@ -95,8 +74,31 @@ pub fn compute_hunks(before: &str, after: &str) -> Vec<PatchHunk> {
     hunks
 }
 
+/// Changed line regions `(old_start, old_end, new_start, new_end)` between `before` and `after`:
+/// 0-based, end exclusive, over lines that keep their terminators. A region holds no line that
+/// both texts share and carries no context, so a pure insertion has `old_start == old_end`.
+pub fn line_regions(before: &str, after: &str) -> Vec<(usize, usize, usize, usize)> {
+    let a: Vec<&str> = before.split_inclusive('\n').collect();
+    let b: Vec<&str> = after.split_inclusive('\n').collect();
+    diff_regions(&a, &b)
+}
+
+/// [`line_regions`] over split lines: the shared leading and trailing lines are cut first, and the
+/// middle is aligned by LCS, or is one region when the table would pass [`LCS_CELL_LIMIT`].
+fn diff_regions(a: &[&str], b: &[&str]) -> Vec<(usize, usize, usize, usize)> {
+    let (prefix, suffix) = affixes(a, b);
+    let (a_mid, b_mid) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+    if a_mid.len().saturating_mul(b_mid.len()) > LCS_CELL_LIMIT {
+        return vec![(prefix, a.len() - suffix, prefix, b.len() - suffix)];
+    }
+    lcs_regions(a_mid, b_mid)
+        .into_iter()
+        .map(|(o0, o1, n0, n1)| (o0 + prefix, o1 + prefix, n0 + prefix, n1 + prefix))
+        .collect()
+}
+
 /// Changed regions `(old_start, old_end, new_start, new_end)` between `a` and `b`.
-fn lcs_regions(a: &[&str], b: &[&str]) -> Vec<(usize, usize, usize, usize)> {
+pub(super) fn lcs_regions(a: &[&str], b: &[&str]) -> Vec<(usize, usize, usize, usize)> {
     let (n, m) = (a.len(), b.len());
     let width = m + 1;
     let mut table = vec![0u32; (n + 1) * width];
@@ -154,7 +156,7 @@ pub fn hunk_stats(hunk: &PatchHunk) -> (usize, usize) {
 }
 
 /// Number of leading and trailing lines that `a` and `b` share.
-fn affixes(a: &[&str], b: &[&str]) -> (usize, usize) {
+pub(super) fn affixes(a: &[&str], b: &[&str]) -> (usize, usize) {
     let mut prefix = 0;
     while prefix < a.len() && prefix < b.len() && a[prefix] == b[prefix] {
         prefix += 1;

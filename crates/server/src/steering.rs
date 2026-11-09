@@ -2,9 +2,12 @@
 //! used where another one answers the same question for fewer tokens, so an agent that is on
 //! course never sees one. Each hint fires once per streak and is not repeated while it is ignored.
 
+use std::collections::BTreeMap;
+
 use crate::filesystem::tools::GrepParams;
 use crate::langtool::engine::reader::UnfocusedRead;
 use crate::language::registry;
+use crate::workflow::tools::PatchMiss;
 
 /// Symbol searches by `filesystem_grep` in a row after which `langtool_find_references` is
 /// suggested.
@@ -14,12 +17,18 @@ const SYMBOL_GREPS_BEFORE_HINT: usize = 2;
 const IGNORED_READ_HINTS_LIMIT: usize = 2;
 /// Names shorter than this are more likely words than code symbols.
 const MIN_SYMBOL_LEN: usize = 3;
+/// The failed patch on one file in a turn at which the hint says where to read it again.
+const PATCH_MISS_OF_HINT: usize = 2;
 
 #[derive(Default)]
 pub(crate) struct ToolUseHints {
     symbol_greps: usize,
     grep_hinted: bool,
     ignored_read_hints: usize,
+    /// The turn that `patch_misses` counts in.
+    miss_turn: String,
+    /// Failed patches per file since a write last changed the file, in turn `miss_turn`.
+    patch_misses: BTreeMap<String, usize>,
 }
 
 impl ToolUseHints {
@@ -71,6 +80,36 @@ impl ToolUseHints {
             "{} has {} lines; fold_level=0 gives an outline, symbol='Name' reads one definition.",
             raw.path, raw.lines
         ))
+    }
+
+    /// A `Patch` did not place in `turn`. The second miss on one file in a turn says, once, where to
+    /// read it again: the lines of the definition around the failing hunk, or of the hunk itself.
+    pub(crate) fn after_patch_miss(&mut self, turn: &str, miss: &PatchMiss) -> Option<String> {
+        if self.miss_turn != turn {
+            self.miss_turn = turn.to_string();
+            self.patch_misses.clear();
+        }
+        let misses = self.patch_misses.entry(miss.path.clone()).or_insert(0);
+        *misses += 1;
+        if *misses != PATCH_MISS_OF_HINT {
+            return None;
+        }
+        Some(match (miss.lines, miss.symbol.as_deref()) {
+            (Some((first, last)), Some(symbol)) => {
+                format!("re-read lines {first}..{last}, or ReplaceSymbol {symbol}")
+            }
+            (Some((first, last)), None) => {
+                format!("re-read lines {first}..{last} before the next Patch")
+            }
+            (None, _) => format!("re-read {} before the next Patch", miss.path),
+        })
+    }
+
+    /// A write changed `paths`: the patch misses on them are over.
+    pub(crate) fn patches_applied(&mut self, paths: &[String]) {
+        for path in paths {
+            self.patch_misses.remove(path);
+        }
     }
 }
 

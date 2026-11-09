@@ -115,6 +115,48 @@ fn configured_checks_are_hinted_after_code_edits_and_rearmed_per_turn() {
 }
 
 #[test]
+fn a_second_failed_patch_on_one_file_hints_where_to_read_again() {
+    let tmp = TempProject::new("miss-hints");
+    let state = tmp.open(ServerConfig::default());
+    crate::turn(&state, "Setup", "setup", None);
+    let write = |op: FileOp| {
+        state.workflow_write_files(WriteFilesParams {
+            title: None,
+            ops: vec![op],
+        })
+    };
+    write(FileOp::Create {
+        path: "src/lib.rs".into(),
+        content: "pub fn alpha() {\n    let first = 1;\n    first\n}\n\npub fn beta() {\n    let second = 2;\n    second\n}\n".into(),
+    })
+    .unwrap();
+    let patch = |old: &str, new: &str| FileOp::Patch {
+        path: "src/lib.rs".into(),
+        hunks: vec![hunk(old, new, Some(7))],
+    };
+    let miss = |old: &str| {
+        write(patch(old, "    let other = 0;\n"))
+            .unwrap_err()
+            .to_string()
+    };
+
+    let first = miss("    let missing = 99;\n");
+    assert!(!first.contains("hint:"), "{first}");
+    let second = miss("    let missing = 98;\n");
+    assert!(
+        second.ends_with("hint: re-read lines 6..9, or ReplaceSymbol beta"),
+        "{second}"
+    );
+    let third = miss("    let missing = 97;\n");
+    assert!(!third.contains("hint:"), "the hint repeated: {third}");
+
+    // A patch that places ends the streak.
+    write(patch("    let second = 2;\n", "    let second = 3;\n")).unwrap();
+    let after = miss("    let missing = 96;\n");
+    assert!(!after.contains("hint:"), "{after}");
+}
+
+#[test]
 fn many_edit_batches_without_handover_tasks_are_hinted_once_per_turn() {
     let tmp = TempProject::new("checkpoint-hints");
     let state = tmp.open(ServerConfig::default());

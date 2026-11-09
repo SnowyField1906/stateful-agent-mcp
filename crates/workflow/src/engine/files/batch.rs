@@ -5,16 +5,23 @@ use serde::Serialize;
 
 use crate::common::{AgentError, Result};
 use crate::engine::Project;
+use crate::engine::ops::diff::line_regions;
 use crate::engine::ops::net_ops::net_ops;
 use crate::engine::ops::overlay::{Overlay, read_text_opt};
 use crate::engine::ops::symbol_edit::has_syntax_errors;
 use crate::engine::ops::{FileOp, Tree};
+use crate::engine::session::seen::{Origin, Sighting};
 use crate::engine::session::store::{self, DeletedMap};
 use crate::language::registry;
 use crate::toolchain::format::{FormatReport, format_paths};
 
 use super::normalize::normalize_op;
 use super::op::BatchTracker;
+
+/// Most rows of `Batch::reshaped` that list rewritten lines.
+const RESHAPED_ROWS: usize = 6;
+/// Longest text of one line in a `reshaped` row, in characters.
+const RESHAPED_TEXT: usize = 60;
 
 /// Outcome of one batch; serializes to the fields `write_files` and `new_turn` report.
 #[derive(Debug, Serialize)]
@@ -26,6 +33,11 @@ pub(crate) struct Batch {
     pub changed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub format_warnings: Vec<String>,
+    /// What a formatter did to the lines this batch edited: up to `RESHAPED_ROWS` rows such as
+    /// `a.rs 41: fn a(x:i32) -> fn a(x: i32)`, then one entry that counts the rows left out and
+    /// the lines it rewrote outside the edited ranges.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reshaped: Vec<String>,
     /// Symbol edits whose file still has a parse error that it did not have before the edit.
     /// A warning only: an edit can be one step of a change that is valid once complete.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -42,6 +54,7 @@ impl Batch {
             updates,
             changed: false,
             format_warnings: Vec::new(),
+            reshaped: Vec::new(),
             syntax_warnings: Vec::new(),
             changed_paths: Vec::new(),
         }
@@ -81,12 +94,18 @@ impl Project {
         }
         // Formatters rewrite files on disk; the net diff below then records the formatted text.
         let format_report = self.format_written(&overlay);
+        let mut reshaped = Vec::new();
+        if !format_report.formatted.is_empty() {
+            self.note_pre_format(&overlay);
+            reshaped = self.reshaped(&overlay);
+        }
         self.track_changes(&overlay, tracker.moves, tracker.deleted);
         self.refresh_active_updates()?;
         Ok(Batch {
             updates,
             changed: true,
             format_warnings: format_report.warnings,
+            reshaped,
             syntax_warnings,
             changed_paths: overlay.changed().map(|(path, _)| path.clone()).collect(),
         })
@@ -116,6 +135,47 @@ impl Project {
         for path in deleted {
             self.active_moves.remove(&path);
         }
+    }
+
+    /// Keep the text of each file as the agent wrote it when the formatter has changed it, so that
+    /// a later patch quoting that text can still be placed.
+    fn note_pre_format(&self, overlay: &Overlay) {
+        for (path, entry) in overlay.changed() {
+            let Some(written) = &entry.current else {
+                continue;
+            };
+            if matches!(read_text_opt(&self.root, path), Ok(Some(after)) if after != *written) {
+                self.remember_seen(
+                    path,
+                    Sighting {
+                        text: written.clone(),
+                        origin: Origin::PreFormat,
+                        last_turn: Some(self.active.to_string()),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Echo what the formatter did to the lines this batch edited, so that the next quote of them is
+    /// right: a row per rewritten line inside the edited ranges, and a count of the lines it rewrote
+    /// elsewhere in the same files.
+    fn reshaped(&self, overlay: &Overlay) -> Vec<String> {
+        let mut rows = Vec::new();
+        let mut outside = 0;
+        for (path, entry) in overlay.changed() {
+            let Some(written) = &entry.current else {
+                continue;
+            };
+            let Ok(Some(after)) = read_text_opt(&self.root, path) else {
+                continue;
+            };
+            let edited = edited_lines(entry.baseline.as_deref(), written);
+            let (file_rows, file_outside) = reshaped_in(path, written, &after, &edited);
+            rows.extend(file_rows);
+            outside += file_outside;
+        }
+        with_tally(rows, outside)
     }
 
     /// Run the configured formatters over the files the batch created or changed.
@@ -165,8 +225,112 @@ impl Project {
     }
 }
 
+/// `err` of operation `index`. A patch conflict keeps its kind: the server reads it to hint after
+/// repeated misses on one file.
 fn in_op(index: usize, err: AgentError) -> AgentError {
-    AgentError::invalid(format!("ops[{index}]"), err.to_string())
+    match err {
+        AgentError::PatchConflict { path, reason } => AgentError::PatchConflict {
+            path,
+            reason: format!("ops[{index}] {reason}"),
+        },
+        other => AgentError::invalid(format!("ops[{index}]"), other.to_string()),
+    }
+}
+
+/// The 0-based, end-exclusive line ranges of `written` that differ from `baseline`.
+fn edited_lines(baseline: Option<&str>, written: &str) -> Vec<(usize, usize)> {
+    line_regions(baseline.unwrap_or(""), written)
+        .into_iter()
+        .map(|(_, _, first, end)| (first, end))
+        .filter(|(first, end)| first < end)
+        .collect()
+}
+
+/// Whether lines `from..to` (0-based, end exclusive) of the written text touch an edited range.
+fn is_edited(edited: &[(usize, usize)], from: usize, to: usize) -> bool {
+    edited.iter().any(|&(first, end)| from < end && first < to)
+}
+
+/// The rows for the lines that a formatter rewrote in one file, and how many rewritten lines lie
+/// outside the edited ranges. A region that kept its line count is judged and shown line by line;
+/// one that joined or split lines is one row, or one outside count.
+fn reshaped_in(
+    path: &str,
+    written: &str,
+    after: &str,
+    edited: &[(usize, usize)],
+) -> (Vec<String>, usize) {
+    let before: Vec<&str> = written.split_inclusive('\n').collect();
+    let now: Vec<&str> = after.split_inclusive('\n').collect();
+    let mut rows = Vec::new();
+    let mut outside = 0;
+    for (o0, o1, n0, n1) in line_regions(written, after) {
+        if o1 - o0 != n1 - n0 {
+            if is_edited(edited, o0, o1.max(o0 + 1)) {
+                let (first, last) = (n0 + 1, n1.max(n0 + 1));
+                let at = if first == last {
+                    first.to_string()
+                } else {
+                    format!("{first}..{last}")
+                };
+                rows.push(format!(
+                    "{path} {at}: {} lines -> {} lines",
+                    o1 - o0,
+                    n1 - n0
+                ));
+            } else {
+                outside += (o1 - o0).max(n1 - n0);
+            }
+            continue;
+        }
+        for k in 0..o1 - o0 {
+            let (old, new) = (before[o0 + k].trim_end(), now[n0 + k].trim_end());
+            if old == new {
+                continue;
+            }
+            if is_edited(edited, o0 + k, o0 + k + 1) {
+                rows.push(format!("{path} {}: {}", n0 + k + 1, change(old, new)));
+            } else {
+                outside += 1;
+            }
+        }
+    }
+    (rows, outside)
+}
+
+/// One rewritten line as `before -> after`, or `whitespace` when only the spacing changed.
+fn change(old: &str, new: &str) -> String {
+    if old.trim() == new.trim() {
+        return "whitespace".to_string();
+    }
+    format!("{} -> {}", clip(old.trim()), clip(new.trim()))
+}
+
+fn clip(text: &str) -> String {
+    match text.char_indices().nth(RESHAPED_TEXT) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
+/// The first `RESHAPED_ROWS` of `rows`, then one entry that counts the rows left out and the
+/// `outside` lines rewritten outside the edited ranges.
+fn with_tally(mut rows: Vec<String>, outside: usize) -> Vec<String> {
+    let left_out = rows.len().saturating_sub(RESHAPED_ROWS);
+    rows.truncate(RESHAPED_ROWS);
+    let mut tally = Vec::new();
+    if left_out > 0 {
+        tally.push(format!("{left_out} more rows"));
+    }
+    if outside > 0 {
+        tally.push(format!(
+            "{outside} lines rewritten outside the edited ranges"
+        ));
+    }
+    if !tally.is_empty() {
+        rows.push(tally.join(", "));
+    }
+    rows
 }
 
 /// Warnings for the suspect symbol edits whose file still has a parse error at the end of the

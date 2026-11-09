@@ -197,6 +197,13 @@ impl<'a> Origins<'a> {
             && self.verdict(call, caller).origin.is_outside()
     }
 
+    /// Where `name`, written in `file` whose imports are `imports`, comes from when an import binds
+    /// it; `None` for a name that no import brings in or whose package is not known.
+    pub fn name_origin(&self, file: &str, imports: &[Import], name: &str) -> Option<Origin> {
+        let syntax = registry::for_path(file)?;
+        self.imported(syntax, file, imports, name)
+    }
+
     /// The names of the methods that some call in the scan makes on a typed receiver, or through a
     /// written package path, that the standard library or a dependency owns.
     fn outside_methods(&self) -> &HashSet<String> {

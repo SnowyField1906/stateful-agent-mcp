@@ -59,6 +59,12 @@ pub trait Grammar {
         None
     }
 
+    /// First line of the documentation of the whole file (`root` is its syntax tree), without
+    /// comment markers.
+    fn file_doc(&self, _root: Node<'_>, _source: &str) -> Option<String> {
+        None
+    }
+
     /// What `node` names when it is an identifier, `None` for any other node.
     fn identifier(&self, node: Node<'_>) -> Option<Ident>;
 

@@ -3,12 +3,16 @@
 use crate::common::{AgentError, Result};
 use crate::engine::Project;
 use crate::engine::ops::overlay::Overlay;
-use crate::engine::ops::patch::apply_hunks;
+use crate::engine::ops::patch::{History, Version, apply_hunks_tolerant};
 use crate::engine::ops::rename::rename_symbol;
 use crate::engine::ops::summary::{op_summary, symbol_edit_summary};
 use crate::engine::ops::symbol_edit::{Placement, edit_symbol};
 use crate::engine::ops::{FileOp, PatchHunk};
-use crate::engine::session::model::TurnKey;
+use crate::engine::session::model::{TurnKey, TurnRecord};
+use crate::engine::session::seen::{Origin, Sighting};
+
+/// How many of the newest turns that changed a file are asked for the text before them.
+const LEDGER_VERSIONS: usize = 3;
 
 /// What the operations of a batch have done that the overlay alone does not tell.
 #[derive(Default)]
@@ -35,7 +39,10 @@ impl Project {
                 create(ov, path, content)?;
                 Ok(op_summary(op))
             }
-            FileOp::Patch { path, hunks } => patch(ov, path, hunks),
+            FileOp::Patch { path, hunks } => {
+                let versions = || self.quotable_versions(flat, path);
+                patch(ov, path, hunks, &History::new(&versions))
+            }
             FileOp::ReplaceSymbol {
                 path,
                 symbol,
@@ -64,6 +71,53 @@ impl Project {
             FileOp::Recover { id, to_path } => self.recover(ov, flat, id, to_path.as_deref()),
         }
     }
+
+    /// The versions of `path` that the agent was shown and may be quoting, newest first, each with
+    /// what changed the file since: those a read tool showed, then the text before each of the
+    /// newest turns that changed the file, which the agent may have read before a restart.
+    fn quotable_versions(&self, flat: &[TurnKey], path: &str) -> Vec<Version> {
+        let mut versions: Vec<Version> = self
+            .seen_versions(path)
+            .into_iter()
+            .map(|sighting| Version {
+                cause: self.cause_since(path, &sighting),
+                text: sighting.text,
+            })
+            .collect();
+        let touching = flat.iter().enumerate().rev().filter(|(_, key)| {
+            self.turn(**key)
+                .is_some_and(|turn| turn.updates.iter().any(|op| op.touches_path(path)))
+        });
+        for (at, key) in touching.take(LEDGER_VERSIONS) {
+            let Ok(Some(text)) = self.content_before(flat, at, path) else {
+                continue;
+            };
+            if versions.iter().all(|known| known.text != text) {
+                versions.push(Version {
+                    text,
+                    cause: format!("your turn {key}"),
+                });
+            }
+        }
+        versions
+    }
+
+    /// Who changed `path` since the agent was shown `seen`.
+    fn cause_since(&self, path: &str, seen: &Sighting) -> String {
+        if seen.origin == Origin::PreFormat {
+            return "formatter".to_string();
+        }
+        match self.last_key_touching(path) {
+            Some(key) if Some(key.to_string()) != seen.last_turn => {
+                if self.turn(key).is_some_and(TurnRecord::is_external_edit) {
+                    "outside".to_string()
+                } else {
+                    format!("your turn {key}")
+                }
+            }
+            _ => "outside".to_string(),
+        }
+    }
 }
 
 /// True for a directory on disk or one implied by files created in this batch.
@@ -81,20 +135,35 @@ fn create(ov: &mut Overlay, path: &str, content: &str) -> Result<()> {
     ov.set(path, Some(content.to_string()))
 }
 
-/// Apply `hunks` to the file; the summary lists the hunks as they matched.
-fn patch(ov: &mut Overlay, path: &str, hunks: &[PatchHunk]) -> Result<String> {
+/// Apply `hunks` to the file; the summary lists the hunks as they matched, and how each hunk
+/// that did not match byte for byte was placed.
+fn patch(
+    ov: &mut Overlay,
+    path: &str,
+    hunks: &[PatchHunk],
+    history: &History<'_>,
+) -> Result<String> {
     if hunks.is_empty() {
         return Err(AgentError::invalid(path, "no hunks"));
     }
     let text = ov
         .get(path)?
         .ok_or_else(|| AgentError::PathNotFound(path.to_string()))?;
-    let (patched, applied) = apply_hunks(path, &text, hunks)?;
-    ov.set(path, Some(patched))?;
-    Ok(op_summary(&FileOp::Patch {
+    let done = apply_hunks_tolerant(path, &text, hunks, history)?;
+    ov.set(path, Some(done.text))?;
+    let mut summary = op_summary(&FileOp::Patch {
         path: path.to_string(),
-        hunks: applied,
-    }))
+        hunks: done.hunks,
+    });
+    if !done.repairs.is_empty() {
+        let notes: Vec<String> = done
+            .repairs
+            .iter()
+            .map(|repair| format!("h{} {}", repair.hunk, repair.how))
+            .collect();
+        summary.push_str(&format!(" ({})", notes.join("; ")));
+    }
+    Ok(summary)
 }
 
 /// Delete a file, or every file below a directory.

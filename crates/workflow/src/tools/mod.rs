@@ -17,6 +17,7 @@ pub mod write_files;
 pub mod write_notes;
 pub mod write_tasks;
 
+pub use crate::engine::files::PatchMiss;
 pub use crate::engine::items::{GetItemsParams, NoteWriteOp, TaskWriteOp};
 pub use crate::engine::ops::{FileOp, PatchHunk};
 pub use get_files_diff::GetFilesDiffParams;
@@ -27,6 +28,6 @@ pub use new_turn::new_turn_with_paths;
 pub use register::RegisterParams;
 pub use search::SearchParams;
 pub use write_files::WriteFilesParams;
-pub use write_files::write_files_with_paths;
+pub use write_files::{patch_miss, write_files_with_paths};
 pub use write_notes::WriteNotesParams;
 pub use write_tasks::WriteTasksParams;

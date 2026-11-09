@@ -1,7 +1,7 @@
 //! Packages: which manifests mark a project, and where the code that a name refers to comes from.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Where the code that a name refers to comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,5 +74,12 @@ pub trait Packages {
     /// `Unknown` when the language cannot tell.
     fn package_origin(&self, _package: &Package<'_>) -> Origin {
         Origin::Unknown
+    }
+
+    /// The files where execution of the project in `dir` starts or that form its public face, as
+    /// absolute paths of files that exist, sorted. Only manifests and a few well-known folders are
+    /// read.
+    fn entrypoints(&self, _dir: &Path) -> Vec<PathBuf> {
+        Vec::new()
     }
 }

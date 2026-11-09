@@ -3,12 +3,16 @@
 
 use std::collections::BTreeMap;
 
+mod diagnose;
 pub mod diff;
+pub(crate) mod elide;
 pub mod file_op;
 pub mod net_ops;
 pub mod overlay;
 pub mod patch;
+mod rebase;
 pub mod rename;
+mod repair;
 pub mod summary;
 pub mod symbol_edit;
 

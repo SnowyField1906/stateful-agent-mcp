@@ -1,5 +1,6 @@
 //! Cargo manifests: which names a crate depends on, and where its path dependencies live.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
@@ -49,6 +50,42 @@ pub fn find(name: &str, from: &Path, boundary: &Path) -> Option<Declared> {
         dir = current.parent();
     }
     None
+}
+
+/// The crate roots of the package in `dir`: its library (`[lib] path`, else `src/lib.rs`), its
+/// binaries (`src/main.rs`, `src/bin/*.rs`, `src/bin/*/main.rs`, `[[bin]] path`). Only the ones
+/// that exist, sorted.
+pub fn entrypoints(dir: &Path) -> Vec<PathBuf> {
+    let manifest = read(&dir.join("Cargo.toml"));
+    let src = dir.join("src");
+    let declared = |key: &str| -> Option<PathBuf> {
+        let path = manifest.as_ref()?.get(key)?.get("path")?.as_str()?;
+        Some(dir.join(path))
+    };
+    let mut found = vec![declared("lib").unwrap_or_else(|| src.join("lib.rs"))];
+    found.push(src.join("main.rs"));
+    let bins = manifest.as_ref().and_then(|m| m.get("bin"));
+    for bin in bins.and_then(Value::as_array).into_iter().flatten() {
+        if let Some(path) = bin.get("path").and_then(Value::as_str) {
+            found.push(dir.join(path));
+        }
+    }
+    for entry in fs::read_dir(src.join("bin"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            found.push(path.join("main.rs"));
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            found.push(path);
+        }
+    }
+    found.retain(|path| path.is_file());
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// `None` when the dependency is inherited from the workspace.

@@ -12,9 +12,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::common::pathspec::AGENTS_DIR;
-use crate::common::{AgentError, AgentUseMode, Result, Workspace};
+use crate::common::{AgentError, AgentUseMode, Front, Result, Workspace};
 use crate::toolchain::LanguageConfig;
 
 use super::instructions as text;
@@ -23,6 +24,7 @@ use super::ops::patch::apply_hunks_reverse;
 use super::ops::{FileOp, PatchHunk, Tree};
 use super::selector::Sel;
 use super::session::model::{TurnKey, TurnRecord};
+use super::session::seen::{Origin, Seen, Sighting};
 use super::session::store::{self, DeletedMap};
 
 pub struct Project {
@@ -41,6 +43,9 @@ pub struct Project {
     pub(crate) active_moves: BTreeMap<String, String>,
     /// The only writable turn; always the last turn of the last session.
     pub(crate) active: TurnKey,
+    /// Versions of files that the agent was shown. In memory only; read tools fill it through
+    /// [`Workspace::note_seen`], so it sits behind a lock.
+    pub(crate) seen: Mutex<Seen>,
 }
 
 impl Project {
@@ -110,6 +115,7 @@ impl Project {
             active_baseline: Tree::new(),
             active_moves: BTreeMap::new(),
             active,
+            seen: Mutex::new(Seen::default()),
         };
         project.init_active_state()?;
         Ok(project)
@@ -309,6 +315,30 @@ impl Project {
         self.active.to_string()
     }
 
+    /// The turn that last changed `rel` (a `/`-separated path below the root).
+    pub(crate) fn last_key_touching(&self, rel: &str) -> Option<TurnKey> {
+        self.flat_keys().into_iter().rev().find(|key| {
+            self.turn(*key)
+                .is_some_and(|turn| turn.updates.iter().any(|op| op.touches_path(rel)))
+        })
+    }
+
+    /// Keep `sighting` as the newest version of `rel` that the agent was shown.
+    pub(crate) fn remember_seen(&self, rel: &str, sighting: Sighting) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .note(rel, sighting);
+    }
+
+    /// The versions of `rel` that the agent was shown, newest first.
+    pub(crate) fn seen_versions(&self, rel: &str) -> Vec<Sighting> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .versions(rel)
+    }
+
     /// How many handover tasks the active turn has recorded.
     pub fn handover_task_count(&self) -> Result<usize> {
         Ok(self.active_turn()?.tasks.len())
@@ -321,14 +351,22 @@ impl Workspace for Project {
     }
 
     fn last_turn_touching(&self, rel: &str) -> Option<String> {
-        self.flat_keys()
-            .into_iter()
-            .rev()
-            .find(|key| {
-                self.turn(*key)
-                    .is_some_and(|turn| turn.updates.iter().any(|op| op.touches_path(rel)))
-            })
-            .map(|key| key.to_string())
+        self.last_key_touching(rel).map(|key| key.to_string())
+    }
+
+    fn note_seen(&self, rel: &str, text: &str) {
+        self.remember_seen(
+            rel,
+            Sighting {
+                text: text.to_string(),
+                origin: Origin::Read,
+                last_turn: self.last_turn_touching(rel),
+            },
+        );
+    }
+
+    fn work_front(&self) -> Front {
+        self.build_front()
     }
 
     fn read_at(&self, id: &str, rel: &str) -> Result<Option<String>> {

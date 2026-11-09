@@ -209,3 +209,21 @@ fn names_and_paths_follow_the_conventions_of_the_language() {
         );
     }
 }
+
+#[test]
+fn the_sample_has_exported_and_private_definitions() {
+    for syntax in syntaxes() {
+        let language = name(syntax);
+        let sample = Sample::of(syntax);
+        let found = definitions(syntax, &sample);
+        let exported = found
+            .iter()
+            .filter(|(node, _)| syntax.exported(*node, &sample.source))
+            .count();
+        assert!(exported > 0, "{language}: the sample exports nothing");
+        assert!(
+            exported < found.len(),
+            "{language}: every definition of the sample is exported"
+        );
+    }
+}

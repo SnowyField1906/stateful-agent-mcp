@@ -159,6 +159,13 @@ pub trait Declarations {
     fn is_test_path(&self, path: &str) -> bool {
         is_conventional_test_path(path)
     }
+
+    /// Whether the definition that `node` introduces can be named from outside its file, which
+    /// makes it a way into the code (Rust's `pub`, a Python name without a leading underscore).
+    /// The default is that every definition can.
+    fn exported(&self, _node: Node<'_>, _source: &str) -> bool {
+        true
+    }
 }
 
 /// Whether `name` starts with a capital: the common way to write the name of a type.

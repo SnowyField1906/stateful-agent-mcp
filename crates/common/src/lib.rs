@@ -7,6 +7,7 @@
 //! [`Workspace`] is how the scopes below `workflow` reach the registered project without
 //! importing it.
 
+pub mod align;
 pub mod config;
 pub mod error;
 pub mod fs;
@@ -21,4 +22,4 @@ pub use config::{AgentUseMode, ServerConfig};
 pub use error::{AgentError, Result};
 pub use params::{Names, PageParams};
 pub use range::{LineNumber, Range};
-pub use workspace::{Workspace, root_of};
+pub use workspace::{Front, ItemKind, Moved, OpenItem, Workspace, root_of};

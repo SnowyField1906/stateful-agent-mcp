@@ -9,13 +9,16 @@
 //! `.AGENTS/.known/` takes the content of every touched file (see `external`).
 //!
 //! - `batch`: running a batch, committing it and recording its net result in the active turn.
+//! - `miss`: where a failed `Patch` was aimed, for the hint after a repeated miss.
 //! - `normalize`: validating and spelling the paths of each operation.
 //! - `op`: applying one operation to the overlay.
 //! - `recover`: `Recover`, which restores files from past turns.
 
 mod batch;
+mod miss;
 mod normalize;
 mod op;
 mod recover;
 
 pub(crate) use batch::Batch;
+pub use miss::PatchMiss;

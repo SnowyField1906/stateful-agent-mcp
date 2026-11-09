@@ -1,6 +1,6 @@
 //! Rust packages: `Cargo.toml` marks a project, and its dependencies say where a crate lives.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{Declarations, Origin, Package, Packages, locate, tables};
 
@@ -38,5 +38,9 @@ impl Packages for RustSyntax {
                 None => Origin::Project,
             },
         }
+    }
+
+    fn entrypoints(&self, dir: &Path) -> Vec<PathBuf> {
+        manifest::entrypoints(dir)
     }
 }

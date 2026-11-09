@@ -76,7 +76,13 @@ pub fn read(workspace: Option<&dyn Workspace>, req: &Request<'_>) -> Result<Read
                 AgentError::NotFound(format!("{} did not exist at {id}", target.rel))
             })?
         }
-        None => read_text(target)?,
+        None => {
+            let text = read_text(target)?;
+            if let Some(workspace) = workspace.filter(|_| scope.in_project) {
+                workspace.note_seen(&target.rel, &text);
+            }
+            text
+        }
     };
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {

@@ -2,7 +2,7 @@
 //! (`langtool_find_symbols`, `langtool_find_references`, `langtool_view_callgraph`): directory walk, per-file indexing, and
 //! paging of the results grouped by file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::common::fs::resolve::Scope;
 use crate::common::fs::walk::{Kind, WalkOpts, read_searchable, walk};
@@ -32,24 +32,18 @@ pub struct Scan<T> {
     skipped: usize,
 }
 
-/// Index the file or every supported file below the target. `index` receives a file's language,
-/// syntax, text and label (its shown path) and returns its items, or `None` when the file cannot
-/// be parsed; files without
-/// items are left out of the result.
-pub fn scan<T>(
+/// The supported files that the target names or holds, as (shown path, absolute path), in walk
+/// order.
+pub fn files(
     workspace: Option<&dyn Workspace>,
     target: &ScanTarget<'_>,
-    mut index: impl FnMut(&'static Language, &'static dyn Syntax, &str, &str) -> Option<Vec<T>>,
-) -> Result<Scan<T>> {
+) -> Result<Vec<(String, PathBuf)>> {
     let scope = Scope::new(root_of(workspace), target.path, "implicit_path")?;
     let dest = &scope.target;
     let meta = std::fs::symlink_metadata(&dest.abs)
         .map_err(|_| AgentError::PathNotFound(dest.shown().to_string()))?;
 
-    let mut scan = Scan {
-        found: Vec::new(),
-        skipped: 0,
-    };
+    let mut found = Vec::new();
     if meta.is_dir() {
         let globs: Vec<String> = registry::supported_languages()
             .flat_map(|language| language.extensions.iter().map(|ext| format!("*.{ext}")))
@@ -61,7 +55,8 @@ pub fn scan<T>(
         };
         walk(&scope.root, &dest.abs, &opts, |entry| {
             if entry.kind == Kind::File {
-                scan.add(&entry.rel, &scope.root.join(&entry.rel), &mut index);
+                let abs = scope.root.join(&entry.rel);
+                found.push((entry.rel, abs));
             }
             true
         })?;
@@ -69,7 +64,26 @@ pub fn scan<T>(
         if registry::for_path(dest.shown()).is_none() {
             return Err(AgentError::invalid("implicit_path", unsupported_message()));
         }
-        scan.add(dest.shown(), &dest.abs, &mut index);
+        found.push((dest.shown().to_string(), dest.abs.clone()));
+    }
+    Ok(found)
+}
+
+/// Index the file or every supported file below the target. `index` receives a file's language,
+/// syntax, text and label (its shown path) and returns its items, or `None` when the file cannot
+/// be parsed; files without
+/// items are left out of the result.
+pub fn scan<T>(
+    workspace: Option<&dyn Workspace>,
+    target: &ScanTarget<'_>,
+    mut index: impl FnMut(&'static Language, &'static dyn Syntax, &str, &str) -> Option<Vec<T>>,
+) -> Result<Scan<T>> {
+    let mut scan = Scan {
+        found: Vec::new(),
+        skipped: 0,
+    };
+    for (label, abs) in files(workspace, target)? {
+        scan.add(&label, &abs, &mut index);
     }
     Ok(scan)
 }

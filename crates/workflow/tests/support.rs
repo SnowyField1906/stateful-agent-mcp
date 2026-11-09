@@ -6,8 +6,8 @@ use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
 
 use serde_json::Value;
-use stateful_agent_common::{AgentError, Result, ServerConfig, Workspace};
-use stateful_agent_langtool::tools::{ReadFileParams, read_file};
+use stateful_agent_common::{AgentError, Front, Result, ServerConfig, Workspace};
+use stateful_agent_langtool::tools::{FindSymbolsParams, ReadFileParams, find_symbols, read_file};
 use stateful_agent_testkit::TempDir;
 use stateful_agent_workflow::Project;
 use stateful_agent_workflow::tools::{
@@ -90,9 +90,21 @@ impl Session {
         self.with_project(|project| get_files_history::get_files_history(project, &self.config, p))
     }
 
+    /// Where the latest sessions stopped, as the code tools read it.
+    pub fn work_front(&self) -> Front {
+        self.with_project(|project| Ok(project.work_front()))
+            .unwrap()
+    }
+
     pub fn langtool_read_file(&self, p: ReadFileParams) -> Result<String> {
         self.with_project(|project| {
             read_file::read_file(Some(project as &dyn Workspace), p).map(|(out, _)| out)
+        })
+    }
+
+    pub fn langtool_find_symbols(&self, p: FindSymbolsParams) -> Result<String> {
+        self.with_project(|project| {
+            find_symbols::find_symbols(Some(project as &dyn Workspace), &self.config, p)
         })
     }
 }

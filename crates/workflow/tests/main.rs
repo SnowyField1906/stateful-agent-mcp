@@ -3,9 +3,11 @@
 
 mod case_insensitive;
 mod external_edits;
+mod front;
 mod get_files_diff;
 mod get_turns;
 mod new_turn;
+mod patch_repair;
 mod register;
 mod search;
 mod support;

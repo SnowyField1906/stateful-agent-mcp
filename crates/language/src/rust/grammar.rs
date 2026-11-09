@@ -66,6 +66,21 @@ impl Grammar for RustSyntax {
         first
     }
 
+    /// The first line of the leading `//!` comment.
+    fn file_doc(&self, _root: Node<'_>, source: &str) -> Option<String> {
+        for line in source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let text = line.strip_prefix("//!")?.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        None
+    }
+
     fn identifier(&self, node: Node<'_>) -> Option<Ident> {
         match node.kind() {
             "identifier" => Some(Ident::Value),

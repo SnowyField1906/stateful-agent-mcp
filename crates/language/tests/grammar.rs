@@ -127,3 +127,27 @@ fn the_sample_has_text_and_containers_and_a_doc_comment_is_text() {
         }
     }
 }
+
+#[test]
+fn a_file_documentation_line_is_one_line_without_markers() {
+    for syntax in syntaxes() {
+        let language = name(syntax);
+        let sample = Sample::of(syntax);
+        let line = syntax
+            .file_doc(sample.tree.root_node(), &sample.source)
+            .unwrap_or_else(|| panic!("{language}: `file_doc` finds none in the sample"));
+        assert!(
+            !line.is_empty()
+                && line.trim() == line
+                && !line.contains('\n')
+                && !line.starts_with(['/', '#', '"', '\'']),
+            "{language}: the file documentation line {line:?} keeps whitespace or markers"
+        );
+        let empty = parse(syntax, "").unwrap();
+        assert_eq!(
+            syntax.file_doc(empty.root_node(), ""),
+            None,
+            "{language}: an empty file is documented"
+        );
+    }
+}

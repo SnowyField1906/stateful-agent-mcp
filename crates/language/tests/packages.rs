@@ -68,3 +68,26 @@ fn a_relative_package_is_the_projects_and_a_dependency_is_named_after_its_root()
         }
     }
 }
+
+#[test]
+fn entrypoints_are_existing_files_of_the_project() {
+    for syntax in syntaxes() {
+        let language = name(syntax);
+        let project = TempDir::new("language-entrypoints");
+        assert!(
+            syntax.entrypoints(&project.root).is_empty(),
+            "{language}: an empty folder has entrypoints"
+        );
+        project.write(&format!("src/main.{}", syntax.language().extensions[0]), "");
+        for manifest in syntax.manifests() {
+            project.write(manifest, "");
+        }
+        for entry in syntax.entrypoints(&project.root) {
+            assert!(
+                entry.is_file() && entry.starts_with(&project.root),
+                "{language}: {} is not a file of the project",
+                entry.display()
+            );
+        }
+    }
+}

@@ -49,6 +49,11 @@ impl Grammar for PythonSyntax {
         first_docstring_line(block, source).map(|line| format!("\"\"\"{line}\"\"\""))
     }
 
+    /// The first line of the docstring of the module.
+    fn file_doc(&self, root: Node<'_>, source: &str) -> Option<String> {
+        first_docstring_line(root, source)
+    }
+
     fn identifier(&self, node: Node<'_>) -> Option<Ident> {
         (node.kind() == "identifier").then_some(Ident::Value)
     }

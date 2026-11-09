@@ -8,7 +8,8 @@ use super::name_match::similarity_score;
 use super::scan::{ScanTarget, scan};
 use super::selector::SymbolSelector;
 use super::symbols::{self, Symbol};
-use crate::common::{AgentError, PageParams, Result, ServerConfig, Workspace};
+use crate::common::fs::resolve::Scope;
+use crate::common::{AgentError, PageParams, Result, ServerConfig, Workspace, root_of};
 use crate::language::{Kind, registry};
 
 /// What to list, where, and how much of the result to show.
@@ -93,7 +94,10 @@ pub fn list(
     // Per query: whether a definition matched it, and the close names for when none did.
     let mut matched = vec![false; queries.len()];
     let mut suggestions = vec![BTreeMap::<String, usize>::new(); queries.len()];
-    let found = scan(workspace, &query.target, |lang, syntax, text, _| {
+    // Files below the project root are noted as seen when their bodies are shown; the labels of a
+    // scan outside it are not project paths.
+    let in_project = Scope::new(root_of(workspace), query.target.path, "implicit_path")?.in_project;
+    let found = scan(workspace, &query.target, |lang, syntax, text, label| {
         let allowed = match &kinds_filter {
             Some(map) => match map.get(lang.name) {
                 Some(list) if !list.is_empty() => Some(list),
@@ -144,6 +148,12 @@ pub fn list(
             .collect();
         if query.include_body {
             symbols::attach_bodies(&mut listed, text);
+            if in_project
+                && listed.iter().any(|symbol| symbol.body.is_some())
+                && let Some(workspace) = workspace
+            {
+                workspace.note_seen(label, text);
+            }
         }
         Some(listed)
     })?;

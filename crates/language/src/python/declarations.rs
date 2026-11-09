@@ -54,6 +54,74 @@ impl Declarations for PythonSyntax {
         is_conventional_test_path(path)
             || Path::new(path).file_stem().and_then(|stem| stem.to_str()) == Some("conftest")
     }
+
+    /// A name without a leading underscore, in a class that is exported too and not inside a
+    /// function. When the module lists `__all__`, that list decides for its top-level names.
+    fn exported(&self, node: Node<'_>, source: &str) -> bool {
+        let Some(definition) = self.definition(node, source) else {
+            return true;
+        };
+        // The name of the definition, then the names of the classes around it, innermost first.
+        let mut names = vec![definition.name];
+        let mut module = None;
+        let mut above = node.parent();
+        while let Some(parent) = above {
+            match parent.kind() {
+                "function_definition" => return false,
+                "class_definition" => {
+                    if let Some(name) = parent.child_by_field_name("name") {
+                        names.push(node_text(name, source).to_string());
+                    }
+                }
+                "module" => module = Some(parent),
+                _ => {}
+            }
+            above = parent.parent();
+        }
+        let listed = module.and_then(|module| all_names(module, source));
+        match (listed, names.split_last()) {
+            (Some(listed), Some((top, members))) => {
+                listed.contains(top) && members.iter().all(|name| !name.starts_with('_'))
+            }
+            _ => names.iter().all(|name| !name.starts_with('_')),
+        }
+    }
+}
+
+/// The names that the module lists in `__all__`, when it has one.
+fn all_names(module: Node<'_>, source: &str) -> Option<Vec<String>> {
+    let mut names: Option<Vec<String>> = None;
+    let mut cursor = module.walk();
+    for statement in module.named_children(&mut cursor) {
+        let Some(assignment) = statement
+            .named_child(0)
+            .filter(|_| statement.kind() == "expression_statement")
+            .filter(|node| matches!(node.kind(), "assignment" | "augmented_assignment"))
+        else {
+            continue;
+        };
+        let is_all = assignment
+            .child_by_field_name("left")
+            .is_some_and(|left| node_text(left, source) == "__all__");
+        let Some(list) = assignment.child_by_field_name("right").filter(|_| is_all) else {
+            continue;
+        };
+        let mut inner = list.walk();
+        names.get_or_insert_with(Vec::new).extend(
+            list.named_children(&mut inner)
+                .filter(|item| item.kind() == "string")
+                .map(|item| string_value(node_text(item, source))),
+        );
+    }
+    names
+}
+
+/// The text of a string literal without its prefix letters and quotes.
+fn string_value(literal: &str) -> String {
+    literal
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+        .trim_matches(['"', '\''])
+        .to_string()
 }
 
 /// The definition whose name is the `name` field of `node`.

@@ -2,13 +2,14 @@
 
 use serde_json::Value;
 
-use crate::common::Result;
 use crate::State;
+use crate::common::{AgentError, Result};
+use crate::workflow::Project;
 use crate::workflow::tools::{
     GetFilesDiffParams, GetFilesHistoryParams, GetItemsParams, GetTurnsParams, NewTurnParams,
     RegisterParams, SearchParams, WriteFilesParams, WriteNotesParams, WriteTasksParams,
     get_files_diff, get_files_history, get_notes, get_tasks, get_turns, new_turn_with_paths,
-    register, search, write_files_with_paths, write_notes, write_tasks,
+    patch_miss, register, search, write_files_with_paths, write_notes, write_tasks,
 };
 
 impl State {
@@ -35,7 +36,11 @@ impl State {
 
     pub fn workflow_write_files(&self, p: WriteFilesParams) -> Result<Value> {
         self.with_project_mut(|project| {
-            let (mut out, changed_paths) = write_files_with_paths(project, p)?;
+            let (mut out, changed_paths) = match write_files_with_paths(project, &p) {
+                Ok(done) => done,
+                Err(err) => return Err(self.hint_patch_miss(project, &p, err)),
+            };
+            self.tool_hints().patches_applied(&changed_paths);
             let turn_id = out
                 .get("turn_id")
                 .and_then(Value::as_str)
@@ -44,6 +49,28 @@ impl State {
             self.maybe_add_validation_hint(project, &turn_id, &changed_paths, &mut out);
             Ok(out)
         })
+    }
+
+    /// `err` with a hint on its last line when it is the second patch miss on one file in a turn.
+    fn hint_patch_miss(
+        &self,
+        project: &Project,
+        p: &WriteFilesParams,
+        err: AgentError,
+    ) -> AgentError {
+        let Some(miss) = patch_miss(project, p, &err) else {
+            return err;
+        };
+        let hint = self
+            .tool_hints()
+            .after_patch_miss(&project.active_turn_id(), &miss);
+        match (err, hint) {
+            (AgentError::PatchConflict { path, reason }, Some(hint)) => AgentError::PatchConflict {
+                path,
+                reason: format!("{reason}\nhint: {hint}"),
+            },
+            (err, _) => err,
+        }
     }
 
     pub fn workflow_write_notes(&self, p: WriteNotesParams) -> Result<Value> {

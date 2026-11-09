@@ -11,6 +11,7 @@ pub mod fold;
 pub mod imports;
 pub mod incoming;
 pub mod index;
+pub mod lens;
 pub mod name_match;
 pub mod origins;
 pub mod outgoing;
