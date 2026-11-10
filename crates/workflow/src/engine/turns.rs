@@ -97,14 +97,22 @@ impl Project {
         }
     }
 
-    /// Record outside edits, build the turn's title, notes and tasks on a copy, write the files and
-    /// store the copy together with the net file updates.
+    /// Run the file operations on the overlay, settle the outside edits to the files they change,
+    /// build the turn's title, notes and tasks on a copy, write the files and store the copy
+    /// together with the net file updates.
     fn fill_started_turn(
         &mut self,
         start: &TurnStart<'_>,
         reuse: bool,
     ) -> Result<(Option<ExternalEdits>, Option<Batch>)> {
-        let external = self.sync_external_edits()?;
+        let prepared = match start.files {
+            Some(ops) if !ops.is_empty() => Some(self.prepare_files(ops)?),
+            _ => None,
+        };
+        let external = match &prepared {
+            Some(prepared) => self.sync_external_edits(&prepared.changed())?,
+            None => None,
+        };
         let mut turn = if reuse {
             self.active_turn()?.clone()
         } else {
@@ -119,9 +127,9 @@ impl Project {
         if let Some(ops) = start.tasks {
             self.apply_task_ops(&mut turn, ops)?;
         }
-        let batch = match start.files {
-            Some(ops) if !ops.is_empty() => Some(self.apply_files(ops)?),
-            _ => None,
+        let batch = match prepared {
+            Some(prepared) => Some(self.commit_files(prepared)?),
+            None => None,
         };
         turn.updates = self.active_turn()?.updates.clone();
         self.replace_active(turn)?;

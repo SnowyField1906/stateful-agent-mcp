@@ -42,8 +42,9 @@ pub fn write_files_with_paths(
     project: &mut Project,
     p: &WriteFilesParams,
 ) -> Result<(Value, Vec<String>)> {
-    let external = project.sync_external_edits()?;
-    let batch = project.apply_files(&p.ops)?;
+    let prepared = project.prepare_files(&p.ops)?;
+    let external = project.sync_external_edits(&prepared.changed())?;
+    let batch = project.commit_files(prepared)?;
     let title = project.name_active_turn(p.title.as_deref())?;
     let changed_paths = batch.changed_paths.clone();
     let mut out = json!(batch);

@@ -12,7 +12,7 @@ use crate::Project;
 use crate::common::{Result, ServerConfig};
 use crate::engine::handover;
 
-pub const DESCRIPTION: &str = "Open a project (`folder_path`, absolute) and start or resume its session. Call this first. Returns the active turn ID, the usage guide and the project's own instructions (left out on a repeat call for the same project when they have not changed; `show_instructions` forces them), `language_capabilities` (the actions `langtool_run_action` accepts) and the previous turn's notes, handover tasks and file updates. Files that changed on disk outside the ledger are recorded in a turn of their own and listed under `external_edits`.";
+pub const DESCRIPTION: &str = "Open a project (`folder_path`, absolute) and start or resume its session. Call this first. Returns the active turn ID, the usage guide and the project's own instructions (left out on a repeat call for the same project when they have not changed; `show_instructions` forces them), `language_capabilities` (the actions `langtool_run_action` accepts) and the previous turn's notes, handover tasks and file updates. Files changed on disk outside the ledger are settled when a later batch changes them, not here.";
 
 /// Said when the instructions are left out because this server returned them already.
 const INSTRUCTIONS_HINT: &str = "Instructions are unchanged since this server last returned them for this project; call again with `show_instructions: true` to read them.";
@@ -37,16 +37,12 @@ pub struct RegisterParams {
 }
 
 pub fn register(cfg: &ServerConfig, p: RegisterParams) -> Result<(Project, Value)> {
-    let mut project = Project::open(&p.folder_path)?;
-    let external = project.sync_external_edits()?;
+    let project = Project::open(&p.folder_path)?;
     let show_last_turn = p.show_last_turn_info.unwrap_or(true);
 
     let mut out = Map::new();
     out.insert("project_root".into(), json!(project.root.to_string_lossy()));
     out.insert("active_turn_id".into(), json!(project.active.to_string()));
-    if let Some(external) = &external {
-        out.insert("external_edits".into(), external.report());
-    }
     match project.language_config() {
         Ok(lang) => {
             if let Some(caps) = lang.capabilities_json() {

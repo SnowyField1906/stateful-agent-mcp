@@ -4,6 +4,9 @@
 //! - it contains `{files}`: run once with all files of that language;
 //! - it contains `{file}`: run once per file;
 //! - otherwise: the file's text is piped to stdin and stdout replaces the file.
+//!
+//! Only the last form can also be asked what it would make of a text ([`format_text`]), because
+//! the others edit real files.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -71,6 +74,30 @@ pub fn format_paths(config: &LanguageConfig, root: &Path, paths: &[String]) -> F
         }
     }
     report
+}
+
+/// What the configured formatter makes of `text`, the content of project file `path`, without
+/// touching any file. Only a formatter that reads stdin and writes stdout can be asked this: one
+/// that edits files in place would have to run on real files. `None` when the file's language has
+/// no such formatter, or it fails or gives no usable output.
+pub fn format_text(config: &LanguageConfig, root: &Path, path: &str, text: &str) -> Option<String> {
+    let lang = language_for_path(path)?;
+    let command = config.language(lang.name)?.format.as_deref()?;
+    if command.contains("{file") {
+        return None;
+    }
+    let out = run_shell(
+        command,
+        root,
+        Some(text.as_bytes().to_vec()),
+        FORMAT_TIMEOUT,
+    )
+    .ok()?;
+    if !out.success() {
+        return None;
+    }
+    let formatted = String::from_utf8(out.stdout).ok()?;
+    (!formatted.is_empty() || text.is_empty()).then_some(formatted)
 }
 
 /// Run a command that edits the files in place, then report which ones changed.

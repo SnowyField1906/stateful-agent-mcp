@@ -38,7 +38,7 @@ const COMMON_GUIDE: &str = "\
 - **Notes**: durable facts or decisions that a later turn cannot guess, with the reason or implication. Never progress, build status, duplicates or what the file updates already show; leave notes empty when nothing qualifies. Link related notes with `ref_notes`.
 - **Handover tasks**: short-term work left for the next turn or session, not the project's backlog. Mark tasks the user asked for `user_explicit: true`; carry unfinished ones forward with `RollOver`.
 - **File updates**: `workflow_write_files` takes `Create`, `Move`, `Patch`, `Delete` and `Recover`. Results list one line per operation (`Patch src/a.rs +3 -1`); `workflow_get_files_diff` returns a unified diff.
-- **External edits**: when a file the ledger has touched was changed on disk by someone else, the next `workflow_register`, `workflow_write_files` or `workflow_new_turn` records the change as its own turn titled `[External disk edit]` and lists it under `external_edits`. Later turns start from the edited content, so their diffs hold only your changes.
+- **External edits**: files the ledger has touched may change on disk without it (the user, a formatter, a linter). Nothing is recorded until a `workflow_write_files` or `workflow_new_turn` batch changes such a file. Then, for the files of that batch only, a change that is just the project's formatter is merged into the turn that last changed the file (listed under `external_edits` as `formatting_merged`), and any other change is recorded as its own turn titled `[External disk edit]` and listed under `external_edits`. Later turns start from the edited content, so their diffs hold only your changes.
 
 ## Working in a turn
 

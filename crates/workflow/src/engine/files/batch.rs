@@ -1,5 +1,8 @@
-//! `Project::apply_files`: runs a batch on the overlay, commits it and records the net result in
-//! the active turn.
+//! `Project::prepare_files` runs a batch on the overlay; `Project::commit_files` writes it to disk
+//! and records the net result in the active turn. Between the two, the caller settles the changes
+//! made outside the ledger to the files the batch changes (see `external`).
+
+use std::collections::BTreeSet;
 
 use serde::Serialize;
 
@@ -70,9 +73,27 @@ fn is_true(flag: &bool) -> bool {
     *flag
 }
 
+/// A batch that ran on the overlay and is not on disk yet.
+pub(crate) struct Prepared {
+    overlay: Overlay,
+    tracker: BatchTracker,
+    updates: Vec<String>,
+}
+
+impl Prepared {
+    /// The files the batch changes.
+    pub(crate) fn changed(&self) -> BTreeSet<String> {
+        self.overlay
+            .changed()
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+}
+
 impl Project {
-    /// Apply `ops` to the files of the active turn as one atomic batch.
-    pub(crate) fn apply_files(&mut self, ops: &[FileOp]) -> Result<Batch> {
+    /// Run `ops` on an overlay of the files as one atomic batch. Nothing is written or recorded:
+    /// a failing operation fails the batch here.
+    pub(crate) fn prepare_files(&self, ops: &[FileOp]) -> Result<Prepared> {
         if ops.is_empty() {
             return Err(AgentError::invalid(
                 "ops",
@@ -88,7 +109,20 @@ impl Project {
                 .and_then(|op| self.apply_op(&mut overlay, &mut tracker, &flat, &op));
             updates.push(applied.map_err(|e| in_op(i, e))?);
         }
+        Ok(Prepared {
+            overlay,
+            tracker,
+            updates,
+        })
+    }
 
+    /// Write a prepared batch to the files of the active turn and record its net result.
+    pub(crate) fn commit_files(&mut self, prepared: Prepared) -> Result<Batch> {
+        let Prepared {
+            overlay,
+            tracker,
+            updates,
+        } = prepared;
         if overlay.changed().next().is_none() {
             return Ok(Batch::unchanged(updates));
         }

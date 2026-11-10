@@ -97,7 +97,8 @@ impl From<String> for Action {
 /// Commands configured for one language.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LanguageTooling {
-    /// Formatter run automatically by `write_files`.
+    /// Formatter run automatically by `write_files`. One that reads stdin and writes stdout also
+    /// tells the ledger which changes made outside it are only formatting.
     pub format: Option<String>,
     actions: BTreeMap<Action, String>,
 }

@@ -8,7 +8,8 @@
 //! baseline and the files on disk, `.AGENTS/.deleted/` is synced with any net-deleted files, and
 //! `.AGENTS/.known/` takes the content of every touched file (see `external`).
 //!
-//! - `batch`: running a batch, committing it and recording its net result in the active turn.
+//! - `batch`: running a batch on the overlay, then committing it and recording its net result in
+//!   the active turn.
 //! - `miss`: where a failed `Patch` was aimed, for the hint after a repeated miss.
 //! - `normalize`: validating and spelling the paths of each operation.
 //! - `op`: applying one operation to the overlay.
