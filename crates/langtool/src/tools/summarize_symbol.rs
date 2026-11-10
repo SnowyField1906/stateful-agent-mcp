@@ -2,14 +2,14 @@
 //! uses, what uses it, its kin and where the work last touched it.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::summarize_feature::{SummarizeFeatureParams, summarize_feature};
-use super::summarize_symbol_story::{call_sites, source_of, story_skeleton};
-use crate::common::{AgentError, ItemKind, Result, ServerConfig, Workspace, root_of};
+use super::summarize_symbol_story::{call_sites, locate, source_of, story_skeleton};
+use crate::common::params::PageParams;
+use crate::common::{AgentError, ItemKind, Result, ServerConfig, Workspace};
 use crate::engine::lens::{
     codebase::Codebase,
     graph::{Edge, Tag, in_test, is_named},
@@ -18,7 +18,7 @@ use crate::engine::lens::{
     zoom::{ROW, Zoom, cut, fit, limit_lines},
 };
 use crate::engine::origins::Origins;
-use crate::engine::scan::ScanTarget;
+use crate::engine::scan::{ScanTarget, label_root};
 use crate::engine::scope::bare_name;
 
 pub const DESCRIPTION: &str = "\
@@ -27,7 +27,10 @@ hub, door or detail), the definitions it uses and the ones that use it, kin that
 words and where the work last touched it. `symbol` is `name`, `Type::name` or `mod/Type/name`; \
 `implicit_path` narrows the scan (default `.`). The zoom (`low`/`medium`/`high`/`max`, default \
 `medium`) grows the rows per section; `high` adds the story, the body folded to its control flow with \
-what each project call is, and the open work that names the symbol; `max` adds the call sites. Use it \
+what each project call is, and the open work that names the symbol; `max` adds the call sites. A list \
+that the zoom cuts ends in `… N more (section=S, entries=A..B)`; give that `section` and `entries` to \
+read those rows: the answer is then the head and those rows of the list (without `section`, of `uses`, \
+`used by` and `kin`). Use it \
 before reading a definition with `langtool_read_file`. A `symbol` of several words that no definition \
 has is answered as `langtool_summarize_feature` with those words as `query`.\
 ";
@@ -35,8 +38,15 @@ has is answered as `langtool_summarize_feature` with those words as `query`.\
 /// The last line of that answer, so that the agent knows which tool takes what.
 const FEATURE_HINT: &str = "hint: `symbol` takes one definition name; words that describe a behaviour go in `query` of langtool_summarize_feature\n";
 
+/// The note under a list that holds a name defined in several places.
+const PARTIAL_NOTE: &str =
+    "note: ~w marks a name defined in several places; w is the share of the mention\n";
+
+/// The most rows that the `… more` row of a list asks for at once.
+const NEXT_PAGE: usize = 100;
+
 /// Parameters for `langtool_summarize_symbol`.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SummarizeSymbolParams {
     /// Definition to summarize: `name`, `Type::name`, `Type.name` or `mod/Type/name`.
     pub symbol: String,
@@ -49,6 +59,14 @@ pub struct SummarizeSymbolParams {
     /// Include dotfiles and gitignored files.
     #[serde(default)]
     pub show_gitignored: Option<bool>,
+    /// With `entries`, the answer is the head and these rows of `uses`, `used by` and `kin`, for
+    /// the rows that a `… N more (section=S, entries=A..B)` row left out.
+    #[serde(flatten)]
+    pub page: PageParams,
+    /// The one list to show instead of all three: `uses`, `used by` or `kin`. Without `entries`
+    /// it shows that list from its first row.
+    #[serde(default)]
+    pub section: Option<String>,
 }
 
 pub fn summarize_symbol(
@@ -68,7 +86,9 @@ pub fn summarize_symbol(
         show_gitignored: p.show_gitignored,
     };
 
-    let root = root_of(workspace);
+    // The shown paths are relative to the scanned folder when it lies outside the project, so the
+    // project of each file is looked up there.
+    let root = label_root(workspace, &target)?;
     let sv = survey(workspace, &target, store)?;
     let mut out = String::new();
     if sv.files.is_empty() {
@@ -76,9 +96,7 @@ pub fn summarize_symbol(
         push_note(&mut out, zoom_note);
         return Ok(out);
     }
-    let origins = root
-        .map(|r| Origins::new(r, &[]))
-        .unwrap_or_else(|| Origins::new(Path::new(""), &[]));
+    let origins = Origins::new(&root, &[]);
     let codebase = Codebase::new(sv.files, &origins);
 
     let (name, qualifiers) = split_query(query);
@@ -128,6 +146,7 @@ pub fn summarize_symbol(
     let def = codebase.def(node);
     let file = codebase.file_of(node);
     let label = codebase.label(file);
+    let at = locate(workspace, &root, label);
     let cap = (zoom.rows() / 6).max(4);
     let mut partial = false;
 
@@ -148,6 +167,53 @@ pub fn summarize_symbol(
         cut(&qualified(&codebase, node), room)
     )));
     out.push('\n');
+
+    // A page of the lists: the head and the asked rows of each list, nothing else.
+    if p.page.entries.is_some() || p.section.is_some() {
+        let only = match p
+            .section
+            .as_deref()
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+        {
+            None => None,
+            Some(word) => match word.to_ascii_lowercase().as_str() {
+                "uses" => Some("uses"),
+                "used by" | "used_by" | "usedby" => Some("used by"),
+                "kin" => Some("kin"),
+                _ => {
+                    return Err(AgentError::invalid(
+                        "section",
+                        "expected `uses`, `used by` or `kin`",
+                    ));
+                }
+            },
+        };
+        let wants = |name: &str| only.is_none_or(|one| one == name);
+        let uses = ranked(&codebase, node, codebase.graph.uses(node));
+        let used_by = ranked(&codebase, node, codebase.graph.used_by(node));
+        let mut longest = 0usize;
+        for (section, edges) in [("uses", &uses), ("used by", &used_by)] {
+            if !wants(section) {
+                continue;
+            }
+            let window = p.page.window_in(cap, edges.len())?;
+            longest = longest.max(window.1);
+            edge_section(&mut out, &codebase, section, edges, window, &mut partial);
+        }
+        if wants("kin") {
+            let kin = kin_of(&codebase, node, &skip_of(&found, &uses, &used_by));
+            let window = p.page.window_in(cap, kin.len())?;
+            longest = longest.max(window.1);
+            kin_section(&mut out, &codebase, &kin, window);
+        }
+        if partial {
+            out.push_str(PARTIAL_NOTE);
+        }
+        push_note(&mut out, zoom_note);
+        return Ok(limit_lines(&out, 3 * longest + 16));
+    }
+
     labelled(&mut out, "sig:", &[def.symbol.signature.clone()]);
     if !def.symbol.doc.is_empty() {
         labelled(&mut out, "doc:", &[def.symbol.doc.clone()]);
@@ -179,84 +245,66 @@ pub fn summarize_symbol(
     // 3. Uses and used by.
     let uses = ranked(&codebase, node, codebase.graph.uses(node));
     let used_by = ranked(&codebase, node, codebase.graph.used_by(node));
-    edge_section(&mut out, &codebase, "uses", &uses, cap, &mut partial);
-    edge_section(&mut out, &codebase, "used by", &used_by, cap, &mut partial);
+    edge_section(&mut out, &codebase, "uses", &uses, (0, cap), &mut partial);
+    edge_section(
+        &mut out,
+        &codebase,
+        "used by",
+        &used_by,
+        (0, cap),
+        &mut partial,
+    );
     if partial {
-        out.push_str(
-            "note: ~w marks a name defined in several places; w is the share of the mention\n",
-        );
+        out.push_str(PARTIAL_NOTE);
     }
 
     // 4. Kin.
     if zoom >= Zoom::Medium {
-        let mut skip: BTreeSet<usize> = found.iter().copied().collect();
-        skip.extend(uses.iter().map(|e| e.to));
-        skip.extend(used_by.iter().map(|e| e.to));
-        let per_file: Vec<Vec<String>> = (0..codebase.files.len())
-            .map(|f| {
-                codebase
-                    .graph
-                    .nodes_of(f)
-                    .filter(|&n| codebase.listed(n))
-                    .map(|n| codebase.def(n).symbol.name.clone())
-                    .collect()
-            })
-            .collect();
-        let words = Words::new(&per_file);
-        let kin = kin(&codebase, &words, node, &skip);
-        if !kin.is_empty() {
-            let mut rows: Vec<String> = kin
-                .iter()
-                .take(cap)
-                .map(|(n, shared)| {
-                    format!(
-                        "{}  {}  {}  shares {shared}",
-                        qualified(&codebase, *n),
-                        codebase.def(*n).symbol.kind.name,
-                        codebase.locator(*n)
-                    )
-                })
-                .collect();
-            if kin.len() > cap {
-                rows.push(format!("… {} more", kin.len() - cap));
-            }
-            labelled(&mut out, "kin:", &rows);
-        }
+        let kin = kin_of(&codebase, node, &skip_of(&found, &uses, &used_by));
+        kin_section(&mut out, &codebase, &kin, (0, cap));
     }
 
     // 5. Story from the source, then touch and the open work from the ledger.
     if zoom >= Zoom::High {
-        if let Some(text) = source_of(workspace, label) {
+        if let Some(text) = source_of(workspace, &at) {
             let rows = story_skeleton(&codebase, node, &text, (zoom.rows() / 3).max(8));
             if !rows.is_empty() {
                 labelled(&mut out, "story:", &rows);
             }
         }
         if zoom >= Zoom::Max {
-            let rows = call_sites(workspace, &codebase, node, &used_by, cap);
+            let rows = call_sites(workspace, &root, &codebase, node, &used_by, cap);
             if !rows.is_empty() {
                 labelled(&mut out, "sites:", &rows);
             }
         }
     }
-    if let Some(ws) = workspace {
+    // The ledger names files by their path in the project.
+    if let Some(ws) = workspace
+        && let Some(rel) = &at.rel
+    {
         if zoom >= Zoom::Medium {
-            let rows = touch_rows(ws, label);
+            let rows = touch_rows(ws, rel);
             if !rows.is_empty() {
                 labelled(&mut out, "touch:", &rows);
             }
         }
         if zoom >= Zoom::High {
-            let rows = work_rows(ws, label, &def.symbol.name, cap);
+            let rows = work_rows(ws, rel, &def.symbol.name, cap);
             if !rows.is_empty() {
                 labelled(&mut out, "work:", &rows);
             }
         }
     }
 
-    // 6. Next step and hint.
+    // 6. Next step and hint. The reader takes the path to `langtool_read_file`, which resolves it in
+    // the project, or as an absolute path outside it.
+    let read_path = at
+        .rel
+        .clone()
+        .unwrap_or_else(|| at.abs.to_string_lossy().into_owned());
     out.push_str(&fit(&format!(
-        "next:   > langtool_read_file file_path={label} symbol={}",
+        "next:   > langtool_read_file file_path={read_path} symbol={}",
         qualified(&codebase, node)
     )));
     out.push('\n');
@@ -434,33 +482,121 @@ fn row_of(codebase: &Codebase, edge: &Edge) -> String {
     fit(&row)
 }
 
+/// The rows `offset..offset + len` of a list, under its label and total.
 fn edge_section(
     out: &mut String,
     codebase: &Codebase,
     label: &str,
     edges: &[Edge],
-    cap: usize,
+    (offset, len): (usize, usize),
     partial: &mut bool,
 ) {
     if edges.is_empty() {
         out.push_str(&format!("{label}: nothing in the survey\n"));
         return;
     }
-    out.push_str(&format!("{label} ({}):\n", edges.len()));
-    for edge in edges.iter().take(cap) {
+    // The users that are test code are said apart: who uses it outside tests is the usual question.
+    let in_tests = edges
+        .iter()
+        .filter(|edge| in_test(codebase.def(edge.to)))
+        .count();
+    if in_tests > 0 && in_tests < edges.len() {
+        out.push_str(&format!(
+            "{label} ({}, {in_tests} in tests):\n",
+            edges.len()
+        ));
+    } else {
+        out.push_str(&format!("{label} ({}):\n", edges.len()));
+    }
+    if offset >= edges.len() {
+        out.push_str("  nothing at these entries\n");
+        return;
+    }
+    for edge in edges.iter().skip(offset).take(len) {
         if edge.weight < 0.95 {
             *partial = true;
         }
         out.push_str(&row_of(codebase, edge));
         out.push('\n');
     }
-    if edges.len() > cap {
-        out.push_str(&format!("  … {} more\n", edges.len() - cap));
+    if let Some(more) = more_row(edges.len(), offset, len, label) {
+        out.push_str(&format!("  {more}\n"));
     }
 }
 
-/// Listed definitions outside `skip` that share a distinguishing word of the name of `node`, the
-/// most used first, each with the word.
+/// The row after a page of `len` rows from `offset` of the list `section` of `total` rows: how many
+/// are left and the `section` and `entries` that read them.
+fn more_row(total: usize, offset: usize, len: usize, section: &str) -> Option<String> {
+    let after = offset + len;
+    (after < total).then(|| {
+        format!(
+            "… {} more (section={section}, entries={}..{})",
+            total - after,
+            after + 1,
+            total.min(after + NEXT_PAGE)
+        )
+    })
+}
+
+/// The definitions that the lists of a symbol already show or that are the symbol itself.
+fn skip_of(found: &[usize], uses: &[Edge], used_by: &[Edge]) -> BTreeSet<usize> {
+    let mut skip: BTreeSet<usize> = found.iter().copied().collect();
+    skip.extend(uses.iter().map(|e| e.to));
+    skip.extend(used_by.iter().map(|e| e.to));
+    skip
+}
+
+/// The kin of `node` outside `skip`: see [`kin`].
+fn kin_of(codebase: &Codebase, node: usize, skip: &BTreeSet<usize>) -> Vec<(usize, String)> {
+    let per_file: Vec<Vec<String>> = (0..codebase.files.len())
+        .map(|f| {
+            codebase
+                .graph
+                .nodes_of(f)
+                .filter(|&n| codebase.listed(n))
+                .map(|n| codebase.def(n).symbol.name.clone())
+                .collect()
+        })
+        .collect();
+    let words = Words::new(&per_file);
+    kin(codebase, &words, node, skip)
+}
+
+/// The rows `offset..offset + len` of the kin, after the label `kin:`.
+fn kin_section(
+    out: &mut String,
+    codebase: &Codebase,
+    kin: &[(usize, String)],
+    (offset, len): (usize, usize),
+) {
+    if kin.is_empty() {
+        return;
+    }
+    let mut rows: Vec<String> = kin
+        .iter()
+        .skip(offset)
+        .take(len)
+        .map(|(n, shared)| {
+            format!(
+                "{}  {}  {}  shares {shared}",
+                qualified(codebase, *n),
+                codebase.def(*n).symbol.kind.name,
+                codebase.locator(*n)
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        rows.push(format!("nothing at these entries ({} in all)", kin.len()));
+    }
+    if let Some(more) = more_row(kin.len(), offset, len, "kin") {
+        rows.push(more);
+    }
+    labelled(out, "kin:", &rows);
+}
+
+/// Listed definitions outside `skip` that share a distinguishing word of the name of `node`, those
+/// of its own project first (a scan of several projects shares words by chance), then the most
+/// used, each with the word.
 fn kin(
     codebase: &Codebase,
     words: &Words,
@@ -480,12 +616,18 @@ fn kin(
             Some((n, shared))
         })
         .collect();
+    let project = codebase.projects[codebase.file_of(node)];
+    let near = |n: usize| codebase.projects[codebase.file_of(n)] == project;
     out.sort_by(|(a, _), (b, _)| {
-        codebase
-            .graph
-            .load(*b)
-            .ca
-            .total_cmp(&codebase.graph.load(*a).ca)
+        near(*b)
+            .cmp(&near(*a))
+            .then(
+                codebase
+                    .graph
+                    .load(*b)
+                    .ca
+                    .total_cmp(&codebase.graph.load(*a).ca),
+            )
             .then(a.cmp(b))
     });
     out

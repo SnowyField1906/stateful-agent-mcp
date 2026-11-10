@@ -76,7 +76,8 @@ pub fn summarize_codebase(
     let codebase = Codebase::new(sv.files, &origins);
 
     let labels: Vec<&str> = codebase.files.iter().map(|(l, _)| l.as_str()).collect();
-    let links = collect_member_links(root, &labels);
+    let project_roots = collect_project_roots(root, &labels);
+    let links = collect_member_links(&project_roots);
     let file_edges = codebase.graph.file_edges();
     let scan_root = root.unwrap_or(Path::new(""));
     let tests: Vec<bool> = codebase
@@ -89,7 +90,7 @@ pub fn summarize_codebase(
         names: codebase.graph.file_names(),
         tests: &tests,
     };
-    let layers = Layers::compute(&labels, &mentions, scan_root, &links);
+    let layers = Layers::compute(&labels, &mentions, scan_root, &links, &project_roots);
 
     let door_files = collect_door_files(&codebase, root, &labels);
 
@@ -136,7 +137,6 @@ pub fn summarize_codebase(
     ));
 
     // 2. Projects (when multiple manifest roots).
-    let project_roots = collect_project_roots(root, &labels);
     if project_roots.len() > 1 {
         out.push_str("projects:\n");
         let mut entries: Vec<(String, String)> = Vec::new();
@@ -505,16 +505,16 @@ fn collect_door_files(
     doors
 }
 
-/// The declared manifest member links, for `Layers::compute`.
-fn collect_member_links(root: Option<&Path>, _labels: &[&str]) -> Vec<(PathBuf, PathBuf)> {
-    let root = match root {
-        Some(r) => r,
-        None => return Vec::new(),
-    };
+/// The manifest member links declared by each project, for `Layers::compute`.
+fn collect_member_links(project_roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
     let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for syntax in registry::supported_languages().filter_map(|l| registry::of(l)) {
-        links.extend(syntax.member_links(root));
+    for project in project_roots {
+        for syntax in registry::supported_languages().filter_map(|l| registry::of(l)) {
+            links.extend(syntax.member_links(project));
+        }
     }
+    links.sort();
+    links.dedup();
     links
 }
 

@@ -11,6 +11,11 @@
 //!   survey defines six or more times (`new`, `fmt`) says too little about where it goes: both are
 //!   dropped. The limit is derived from the data, there is no list of names.
 //!
+//! - A mention never crosses projects. The survey of a folder that holds several projects (each
+//!   with its own manifest) matches names inside each project alone: a name that another project
+//!   writes the same (`tempfile::TempDir` next to a `TempDir` of a test kit) is a name in common,
+//!   not a use. A project that depends on a sibling project shows no edge to it.
+//!
 //! The weight of a mention is the rarity of the name: `1 / candidates`, so a name defined once is a
 //! full edge and a name defined twice gives each definition half. A mention made inside test code
 //! counts a quarter. A name counts once per definition, however many ways it is used there (as a
@@ -119,12 +124,16 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// The graph of `files`, as `Survey::files` lists them. `outside(file, name)` tells whether an
-    /// import of file number `file` binds `name` to the standard library or a dependency.
+    /// The graph of `files`, as `Survey::files` lists them. `projects` holds the project number of
+    /// each file; a mention goes to definitions of the same project only. `outside(file, name)`
+    /// tells whether an import of file number `file` binds `name` to the standard library or a
+    /// dependency.
     pub fn build(
         files: &[(String, Arc<FileFacts>)],
+        projects: &[usize],
         outside: &dyn Fn(usize, &str) -> bool,
     ) -> Self {
+        debug_assert_eq!(projects.len(), files.len());
         let mut first = Vec::with_capacity(files.len() + 1);
         let mut ids = Vec::new();
         for (file, (_, facts)) in files.iter().enumerate() {
@@ -134,7 +143,7 @@ impl Graph {
         first.push(ids.len());
         let def_of = |id: DefId| &files[id.file].1.defs[id.def];
 
-        let mut named: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut named: HashMap<(usize, &str), Vec<usize>> = HashMap::new();
         let mut exported = vec![false; ids.len()];
         let mut file_exported = vec![false; files.len()];
         for (node, id) in ids.iter().enumerate() {
@@ -143,7 +152,7 @@ impl Graph {
                 continue;
             }
             named
-                .entry(bare_name(&def.symbol.name))
+                .entry((projects[id.file], bare_name(&def.symbol.name)))
                 .or_default()
                 .push(node);
             exported[node] = def.exported;
@@ -170,7 +179,7 @@ impl Graph {
                     .push(used.role);
             }
             for (name, roles) in roles {
-                let Some(defined) = named.get(name) else {
+                let Some(defined) = named.get(&(projects[id.file], name)) else {
                     continue;
                 };
                 let local: Vec<usize> = defined

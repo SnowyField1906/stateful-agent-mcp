@@ -3,10 +3,12 @@
 mod callgraph_origins;
 mod find_references;
 mod find_symbols;
+mod lens_codebase;
 mod lens_facts;
 mod lens_graph;
 mod read_file;
 mod run_action;
 mod summarize_codebase;
+mod summarize_symbol;
 mod support;
 mod view_callgraph;

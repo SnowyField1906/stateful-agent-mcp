@@ -27,6 +27,8 @@ const FILE_MENTION_CAP: f64 = 1.0;
 pub struct Codebase {
     /// Each file's shown path and facts.
     pub files: Vec<(String, Arc<FileFacts>)>,
+    /// The project of every file ([`Origins::project`]), numbered in the order they first appear.
+    pub projects: Vec<usize>,
     pub graph: Graph,
     /// The tag of every definition, by node.
     pub def_tags: Vec<Tag>,
@@ -41,8 +43,19 @@ impl Codebase {
     /// A file that only test code mentions outside itself is support code of tests (a `testkit`
     /// crate, a fixture builder): its definitions are marked as test code and the graph is built
     /// again, because mentions made in test code weigh less.
+    ///
+    /// Mentions stay inside a project ([`Origins::project`]), so a scan of several projects reads
+    /// each of them as a scan of it alone does.
     pub fn new(mut files: Vec<(String, Arc<FileFacts>)>, origins: &Origins<'_>) -> Self {
-        let mut graph = build_graph(&files, origins);
+        let mut numbers = HashMap::new();
+        let projects: Vec<usize> = files
+            .iter()
+            .map(|(label, _)| {
+                let next = numbers.len();
+                *numbers.entry(origins.project(label)).or_insert(next)
+            })
+            .collect();
+        let mut graph = build_graph(&files, &projects, origins);
         let support = test_support(&files, &graph);
         if support.iter().any(|&file| file) {
             for (file, (_, facts)) in files.iter_mut().enumerate() {
@@ -52,12 +65,13 @@ impl Codebase {
                     }
                 }
             }
-            graph = build_graph(&files, origins);
+            graph = build_graph(&files, &projects, origins);
         }
         let def_tags = graph.def_tags();
         let file_tags = graph.file_tags();
         Self {
             files,
+            projects,
             graph,
             def_tags,
             file_tags,
@@ -197,8 +211,12 @@ impl Codebase {
     }
 }
 
-fn build_graph(files: &[(String, Arc<FileFacts>)], origins: &Origins<'_>) -> Graph {
-    Graph::build(files, &|file, name| {
+fn build_graph(
+    files: &[(String, Arc<FileFacts>)],
+    projects: &[usize],
+    origins: &Origins<'_>,
+) -> Graph {
+    Graph::build(files, projects, &|file, name| {
         let (label, facts) = &files[file];
         origins
             .name_origin(label, &facts.imports, name)

@@ -7,14 +7,13 @@
 //! the whole body is cut at `zoom.rows()` rows.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::summarize_symbol::{candidates, labelled, push_note, qualified, split_query};
 use crate::common::params::Names;
-use crate::common::{AgentError, Result, ServerConfig, Workspace, root_of};
+use crate::common::{AgentError, Result, ServerConfig, Workspace};
 use crate::engine::lens::{
     codebase::Codebase,
     concept::{lookup, query_words},
@@ -24,7 +23,7 @@ use crate::engine::lens::{
     zoom::{ROW, Zoom, cut, limit_lines},
 };
 use crate::engine::origins::Origins;
-use crate::engine::scan::ScanTarget;
+use crate::engine::scan::{ScanTarget, label_root};
 
 pub const DESCRIPTION: &str = "\
 The code that implements a feature: seeds from `query` words or `symbol` names, the slice around \
@@ -103,14 +102,14 @@ pub fn summarize_feature(
         max_depth: cfg.max_dir_depth,
         show_gitignored: p.show_gitignored,
     };
-    let root = root_of(workspace);
+    // The shown paths are relative to the scanned folder when it lies outside the project, so the
+    // project of each file is looked up there.
+    let root = label_root(workspace, &target)?;
     let sv = survey(workspace, &target, store)?;
     if sv.files.is_empty() {
         return Ok(finish("no supported files found\n".to_string(), &notes));
     }
-    let origins = root
-        .map(|r| Origins::new(r, &[]))
-        .unwrap_or_else(|| Origins::new(Path::new(""), &[]));
+    let origins = Origins::new(&root, &[]);
     let codebase = Codebase::new(sv.files, &origins);
 
     // Wrong-tool tolerance: a lone word that names a definition is read as a symbol.

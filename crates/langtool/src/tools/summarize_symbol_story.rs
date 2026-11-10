@@ -2,9 +2,9 @@
 //! each project call named by what its callee is, and the places that call the definition.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
-use crate::common::fs::resolve::Scope;
-use crate::common::{Workspace, root_of};
+use crate::common::Workspace;
 use crate::engine::fold::{self, Row};
 use crate::engine::lens::{
     codebase::Codebase,
@@ -16,18 +16,33 @@ use crate::engine::references::Role;
 /// The largest source file that the story reads, in bytes.
 const MAX_STORY_BYTES: u64 = 4 << 20;
 
-/// The text of the file `label`, as the survey names it. The agent is shown lines of it, so it is
+/// A file of the survey on disk. The survey names a file relative to the folder that the shown
+/// paths start from (`label_root`), which lies above the registered project when the scanned folder
+/// does, so the label is no path of the project then.
+pub(super) struct Located {
+    pub abs: PathBuf,
+    /// The path in the registered project; `None` when the file lies outside it.
+    pub rel: Option<String>,
+}
+
+/// Where the survey file `label` is, given `base`, the folder that labels are relative to.
+pub(super) fn locate(workspace: Option<&dyn Workspace>, base: &Path, label: &str) -> Located {
+    let abs = base.join(label);
+    let rel = workspace
+        .and_then(|workspace| abs.strip_prefix(workspace.root()).ok())
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+    Located { abs, rel }
+}
+
+/// The text of a file of the survey. The agent is shown lines of it, so a file of the project is
 /// registered as seen: a patch that quotes the story is then recognised as a quote of this version.
-pub(super) fn source_of(workspace: Option<&dyn Workspace>, label: &str) -> Option<String> {
-    let scope = Scope::new(root_of(workspace), Some(label), "file_path").ok()?;
-    if std::fs::metadata(&scope.target.abs).ok()?.len() > MAX_STORY_BYTES {
+pub(super) fn source_of(workspace: Option<&dyn Workspace>, at: &Located) -> Option<String> {
+    if std::fs::metadata(&at.abs).ok()?.len() > MAX_STORY_BYTES {
         return None;
     }
-    let text = std::fs::read_to_string(&scope.target.abs).ok()?;
-    if scope.in_project
-        && let Some(workspace) = workspace
-    {
-        workspace.note_seen(&scope.target.rel, &text);
+    let text = std::fs::read_to_string(&at.abs).ok()?;
+    if let (Some(workspace), Some(rel)) = (workspace, &at.rel) {
+        workspace.note_seen(rel, &text);
     }
     Some(text)
 }
@@ -115,9 +130,11 @@ pub(super) fn story_skeleton(
 }
 
 /// One source line for each place that calls the definition `node`, at most `cap` of them, the
-/// callers that are not tests first in the order of `callers`.
+/// callers that are not tests first in the order of `callers`. `base` is the folder that the labels
+/// of the survey are relative to.
 pub(super) fn call_sites(
     workspace: Option<&dyn Workspace>,
+    base: &Path,
     codebase: &Codebase,
     node: usize,
     callers: &[Edge],
@@ -132,9 +149,9 @@ pub(super) fn call_sites(
             continue;
         }
         let file = codebase.file_of(edge.to);
-        let text = texts
-            .entry(file)
-            .or_insert_with(|| source_of(workspace, codebase.label(file)));
+        let text = texts.entry(file).or_insert_with(|| {
+            source_of(workspace, &locate(workspace, base, codebase.label(file)))
+        });
         let Some(text) = text else {
             continue;
         };
@@ -146,6 +163,9 @@ pub(super) fn call_sites(
         {
             for &line in used.lines.iter().take(2) {
                 if rows.len() >= cap {
+                    rows.push(format!(
+                        "… more sites: > langtool_find_references symbol={name} lists every call"
+                    ));
                     return rows;
                 }
                 if let Some(source) = line.checked_sub(1).and_then(|at| lines.get(at)) {

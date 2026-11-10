@@ -12,6 +12,10 @@
 //! path joins in that direction (a crate cannot use one it does not depend on, directly or not) is
 //! noise and is left out.
 //!
+//! Units of different projects (the manifest roots that the scan found) are independent. No manifest
+//! lists them together, so a mention between them is a name in common, never a dependency; without
+//! this, same-named functions in unrelated packages put nearly every unit into one cycle.
+//!
 //! What the line leaves out: test code and the units that hold only test code, the folders above
 //! the manifests (they are no part of the product), and a mention backed by fewer than two distinct
 //! names, because one name in common is more often a collision than a dependency.
@@ -64,19 +68,22 @@ pub struct Layers {
     pub against: Vec<(usize, usize)>,
     /// Dependencies that a manifest declares and no mention uses, as (from, to).
     pub unused: Vec<(usize, usize)>,
+    /// Whether a mention that the layer line keeps touches the unit, in either direction.
+    pub linked: Vec<bool>,
     /// The number of units in the largest cycle.
     pub cycle: usize,
 }
 
 impl Layers {
     /// The layers of the files named `labels` (relative to `root`), given the mentions between
-    /// them and the dependencies the manifests declare between folders
-    /// (`Packages::member_links`).
+    /// them, the dependencies the manifests declare between folders (`Packages::member_links`)
+    /// and the absolute manifest roots of the projects below `root`.
     pub fn compute(
         labels: &[&str],
         mentions: &Mentions<'_>,
         root: &Path,
         links: &[(PathBuf, PathBuf)],
+        projects: &[PathBuf],
     ) -> Self {
         let is_test = |file: usize| mentions.tests.get(file).copied().unwrap_or(false);
         let (dirs, of_file, manifest) = split_units(labels, root);
@@ -122,9 +129,28 @@ impl Layers {
         let folders: Vec<PathBuf> = units.iter().map(|unit| root.join(&unit.dir)).collect();
         let find = |dir: &Path| folders.iter().position(|folder| folder.as_path() == dir);
         let declared = declared_paths(links, count, &find);
+        // The project of each unit: the deepest project root that holds its folder.
+        let project_of: Vec<Option<usize>> = folders
+            .iter()
+            .map(|folder| {
+                projects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, project)| folder.starts_with(project))
+                    .max_by_key(|(_, project)| project.components().count())
+                    .map(|(at, _)| at)
+            })
+            .collect();
+        // The projects whose manifests list their members: the others declare nothing to check.
+        let mut listed = vec![false; projects.len()];
+        for (from, _) in links {
+            if let Some(at) = find(from).and_then(|unit| project_of[unit]) {
+                listed[at] = true;
+            }
+        }
         // A crate cannot mention one that it does not depend on, directly or not: where the
-        // manifests list the members, a mention against or beside every declared path is a name
-        // in common, not a dependency.
+        // manifests of a project list the members, a mention against or beside every declared
+        // path is a name in common, not a dependency.
         let kept: BTreeMap<(usize, usize), f64> = edges
             .iter()
             .filter(|&(&(a, b), &weight)| {
@@ -132,7 +158,9 @@ impl Layers {
                     && behind
                         .get(&(a, b))
                         .is_some_and(|names| names.len() >= MIN_NAMES)
-                    && (links.is_empty() || !(manifest[a] && manifest[b]) || declared[a][b])
+                    && (!(manifest[a] && manifest[b])
+                        || (project_of[a] == project_of[b]
+                            && (!project_of[a].is_some_and(|at| listed[at]) || declared[a][b])))
             })
             .map(|(&pair, &weight)| (pair, weight))
             .collect();
@@ -165,6 +193,11 @@ impl Layers {
             comp_layer[at] = layer;
         }
         let layer: Vec<usize> = (0..count).map(|unit| comp_layer[comp_of[unit]]).collect();
+        let mut linked = vec![false; count];
+        for &(from, to) in kept.keys() {
+            linked[from] = true;
+            linked[to] = true;
+        }
 
         let weight = |from: usize, to: usize| kept.get(&(from, to)).copied().unwrap_or(0.0);
         let mut against: Vec<(usize, usize)> = Vec::new();
@@ -214,6 +247,7 @@ impl Layers {
             edges,
             against,
             unused,
+            linked,
             cycle,
         }
     }
@@ -227,8 +261,17 @@ impl Layers {
         if live.len() < 2 {
             return Vec::new();
         }
+        // A unit that no kept mention touches rests on nothing and nothing rests on it. In a scan
+        // of several projects those would fill the chain, so they are counted instead.
+        let any_linked = live.iter().any(|&unit| self.linked[unit]);
+        let shown: Vec<usize> = live
+            .iter()
+            .copied()
+            .filter(|&unit| !any_linked || self.linked[unit])
+            .collect();
+        let apart = live.len() - shown.len();
         let mut by_layer: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
-        for &unit in &live {
+        for &unit in &shown {
             by_layer
                 .entry(self.layer[unit])
                 .or_default()
@@ -244,7 +287,7 @@ impl Layers {
             .join(" < ");
         // Most units rest on each other: there are no layers to print, and the chain would be
         // one cut list of names that the projects row already gives.
-        let tangled = self.cycle > 2 && self.cycle * 2 > live.len();
+        let tangled = self.cycle > 2 && self.cycle * 2 > shown.len();
         let mut suffix = String::new();
         if !tangled {
             for &(from, to) in self.against.iter().take(MAX_AGAINST) {
@@ -257,10 +300,13 @@ impl Layers {
                 suffix.push_str(&format!(" +{}", self.against.len() - MAX_AGAINST));
             }
         }
+        if apart > 0 {
+            suffix.push_str(&format!(" ({apart} units apart)"));
+        }
         // The edges against the layers are what the line is for: a long chain gives way to them.
         let width = ROW_WIDTH.saturating_sub(suffix.chars().count());
         let first = if tangled {
-            format!("{} of {} units rest on each other", self.cycle, live.len())
+            format!("{} of {} units rest on each other", self.cycle, shown.len())
         } else {
             cut(chain, width) + &suffix
         };

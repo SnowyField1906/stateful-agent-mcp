@@ -19,8 +19,13 @@ fn survey(sources: &[(&str, &str)]) -> Files {
         .collect()
 }
 
+/// The project number of each file when all of them lie in one project.
+fn one_project(files: &Files) -> Vec<usize> {
+    vec![0; files.len()]
+}
+
 fn graph(files: &Files) -> Graph {
-    Graph::build(files, &|_, _| false)
+    Graph::build(files, &one_project(files), &|_, _| false)
 }
 
 /// The node of the definition `name` in the file called `file`.
@@ -115,9 +120,52 @@ fn a_name_an_import_binds_outside_the_project_is_dropped() {
         ("a.rs", "pub fn parse() {}\n"),
         ("b.rs", "pub fn run() {\n    parse();\n}\n"),
     ]);
-    let graph = Graph::build(&files, &|file, name| file == 1 && name == "parse");
+    let graph = Graph::build(&files, &one_project(&files), &|file, name| {
+        file == 1 && name == "parse"
+    });
     let run = node(&files, &graph, "b.rs", "run");
     assert!(graph.uses(run).is_empty());
+}
+
+#[test]
+fn a_mention_never_crosses_projects() {
+    let files = survey(&[
+        ("a.rs", "pub fn parse() {}\n"),
+        ("b.rs", "pub fn run() {\n    parse();\n}\n"),
+    ]);
+    let apart = Graph::build(&files, &[0, 1], &|_, _| false);
+    let run = node(&files, &apart, "b.rs", "run");
+    assert!(apart.uses(run).is_empty());
+    assert!(apart.file_edges().is_empty());
+    let together = Graph::build(&files, &[0, 0], &|_, _| false);
+    assert_eq!(together.uses(run).len(), 1);
+}
+
+#[test]
+fn a_name_is_counted_as_common_within_its_project_only() {
+    // Six definitions of `parse` in other projects do not make the name common in project 0.
+    let mut sources = vec![
+        ("a.rs".to_string(), "pub fn parse() {}\n".to_string()),
+        (
+            "user.rs".to_string(),
+            "pub fn run() {\n    parse();\n}\n".to_string(),
+        ),
+    ];
+    for at in 0..6 {
+        sources.push((format!("other{at}.rs"), "pub fn parse() {}\n".to_string()));
+    }
+    let refs: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let files = survey(&refs);
+    let mut projects = vec![0, 0];
+    projects.extend((1..=6).collect::<Vec<usize>>());
+    let graph = Graph::build(&files, &projects, &|_, _| false);
+    let run = node(&files, &graph, "user.rs", "run");
+    let edges = graph.uses(run);
+    assert_eq!(edges.len(), 1);
+    assert!(near(edges[0].weight, 1.0));
 }
 
 #[test]

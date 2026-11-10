@@ -299,8 +299,9 @@ impl<'a> Origins<'a> {
         origin
     }
 
-    /// The root of the project that `file` belongs to: the nearest manifest of its language.
-    fn project(&self, file: &str) -> PathBuf {
+    /// The root of the project that `file` belongs to: the workspace or nearest manifest of its
+    /// language, else the root of the scan.
+    pub fn project(&self, file: &str) -> PathBuf {
         let Some(syntax) = registry::for_path(file) else {
             return self.root.to_path_buf();
         };

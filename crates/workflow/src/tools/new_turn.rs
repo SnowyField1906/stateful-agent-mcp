@@ -27,9 +27,9 @@ pub struct NewTurnParams {
     #[serde(default, deserialize_with = "opt_lenient_vec")]
     #[schemars(with = "Option<Vec<TaskWriteOp>>")]
     pub write_tasks: Option<Vec<TaskWriteOp>>,
-    /// File operations to run in the new turn.
+    /// File operation objects to run in the new turn, as in `ops` of `workflow_write_files`.
     #[serde(default, deserialize_with = "opt_lenient_vec")]
-    #[schemars(with = "Option<Vec<FileOp>>")]
+    #[schemars(with = "Option<Vec<Value>>")]
     pub write_files: Option<Vec<FileOp>>,
 }
 
