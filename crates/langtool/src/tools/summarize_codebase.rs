@@ -11,12 +11,12 @@ use super::summarize_symbol::candidates;
 use crate::common::{ItemKind, Result, ServerConfig, Workspace};
 use crate::engine::lens::{
     codebase::{Codebase, span},
-    facts::{FileFacts, facts as read_facts},
+    facts::{Def, FileFacts, facts as read_facts},
     graph::{Tag, in_test, is_named},
     layers::{Layers, Mentions},
     store::{FactStore, survey},
     words::Words,
-    zoom::{Zoom, cut, fit, limit_lines},
+    zoom::{ROW, Zoom, cut, fit, limit_lines},
 };
 use crate::engine::origins::Origins;
 use crate::engine::scan::{ScanTarget, label_root};
@@ -116,7 +116,7 @@ pub fn summarize_codebase(
     let test_defs: usize = codebase
         .files
         .iter()
-        .map(|(_, f)| f.defs.iter().filter(|d| d.symbol.test).count())
+        .map(|(_, f)| f.defs.iter().filter(|d| in_test(d)).count())
         .sum();
     let languages = detect_languages(&labels);
     let path_shown = p.implicit_path.as_deref().unwrap_or(".");
@@ -301,14 +301,18 @@ pub fn summarize_codebase(
         }
     }
 
-    // 7. Tree.
+    // 7. Tree. The shown paths are relative to the project; when the scanned folder lies outside it
+    // (or no project is registered) they are relative to that folder, and the call that opens a
+    // collapsed folder needs the absolute path.
+    let tree_prefix = (!workspace.is_some_and(|ws| ws.root() == scan_root))
+        .then(|| scan_root.to_string_lossy().replace('\\', "/"));
     let tree_rows = render_tree(
         &codebase,
         &door_files,
         &words,
-        &labels,
         zoom,
         p.implicit_path.as_deref(),
+        tree_prefix.as_deref(),
     );
     for row in &tree_rows {
         out.push_str(row);
@@ -391,17 +395,29 @@ fn symbol_delta(
     path: &str,
     turn: &str,
 ) -> Option<String> {
+    let at = codebase.files.iter().position(|(label, _)| label == path)?;
+    // A test file has no named definitions to compare: the file as it is now has them all marked as
+    // test code (by its path or as support code), which the file as it was, read without the
+    // survey, does not have, so the two sides would not be filtered alike.
+    if codebase.is_test_file(at) {
+        return None;
+    }
     let old = workspace.read_before(turn, path).ok()??;
     let before = read_facts(registry::for_path(path)?, &old)?;
-    let now = &codebase.files.iter().find(|(label, _)| label == path)?.1;
+    delta_of(&before, codebase.facts(at))
+}
+
+/// The `Δ` row for a file whose definitions were `before` and are `now`. Definitions are told apart
+/// by their qualified name, so two types that both define `new` are two entries.
+fn delta_of(before: &FileFacts, now: &FileFacts) -> Option<String> {
     let signatures = |file: &FileFacts| -> BTreeMap<String, String> {
         file.defs
             .iter()
             .filter(|def| is_named(def) && !in_test(def))
-            .map(|def| (def.symbol.name.clone(), def.symbol.signature.clone()))
+            .map(|def| (qualified_name(def), def.symbol.signature.clone()))
             .collect()
     };
-    let (was, is) = (signatures(&before), signatures(now));
+    let (was, is) = (signatures(before), signatures(now));
     let added: Vec<&str> = is
         .keys()
         .filter(|name| !was.contains_key(*name))
@@ -427,6 +443,21 @@ fn symbol_delta(
         }
     }
     (!parts.is_empty()).then(|| format!("Δ {}", parts.join(" ")))
+}
+
+/// The name of a definition with the definitions around it: `Store::put`, `<Store as Display>::fmt`
+/// for a method of an `impl Display for Store`, and `put` at the top level. Two types, or two trait
+/// impls of one type, that both define `new` or `fmt` stay apart.
+fn qualified_name(def: &Def) -> String {
+    let mut path = String::new();
+    for frame in def.symbol.scope.frames() {
+        match &frame.trait_name {
+            Some(tr) => path.push_str(&format!("<{} as {tr}>::", frame.name)),
+            None => path.push_str(&format!("{}::", frame.name)),
+        }
+    }
+    path.push_str(&def.symbol.name);
+    path
 }
 
 /// The unique language names of the files, comma-separated.
@@ -804,21 +835,181 @@ fn render_start(codebase: &Codebase, layers: &Layers) -> Vec<String> {
         .collect()
 }
 
-/// Render the flat file tree rows within `zoom.rows()` budget.
+/// Render the tree rows within the `zoom.rows()` budget. The budget is shared among the folders, so
+/// a folder that the walk meets late keeps rows of its own.
+///
+/// A folder with no more files than rows shows them all. Otherwise a folder that is opened (fewer
+/// than `zoom.rings()` levels of folders above it) splits its rows among its entries in proportion
+/// to the files each holds, one row at least; a folder below the opened levels lists its files flat
+/// in walk order. What a folder cannot show ends in one collapsed row that names the call that
+/// opens it. A folder that is the only entry of its parent (`crates/`) is not a level.
 fn render_tree(
     codebase: &Codebase,
     door_files: &BTreeSet<usize>,
     words: &Words,
-    _labels: &[&str],
     zoom: Zoom,
     implicit_path: Option<&str>,
+    prefix: Option<&str>,
 ) -> Vec<String> {
-    let budget = zoom.rows();
-    let mut all_rows: Vec<String> = Vec::new();
+    let mut root = Folder::new(String::new());
+    for (file, (label, _)) in codebase.files.iter().enumerate() {
+        let mut folders: Vec<&str> = label
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect();
+        folders.pop();
+        root.insert(file, &folders);
+    }
+    let view = TreeView {
+        codebase,
+        door_files,
+        words,
+        rings: zoom.rings(),
+        scanned: implicit_path.unwrap_or("."),
+        prefix,
+    };
+    let mut rows = Vec::new();
+    view.rows(&root, 0, zoom.rows(), &mut rows);
+    rows
+}
 
-    for (file, (label, facts)) in codebase.files.iter().enumerate() {
-        let raw_tag = codebase.file_tags[file];
-        let effective_tag = if door_files.contains(&file) && raw_tag == Tag::Detail {
+/// How many of the hidden files of a collapsed folder give a name to its row.
+const FOLD_PREVIEW: usize = 5;
+/// The least room, in characters, for which a collapsed row prints names at all.
+const MIN_PREVIEW: usize = 8;
+
+/// A folder of the scan and what it holds, in the order the walk met it.
+struct Folder {
+    /// The path from the root of the shown paths, with `/`; empty for the root.
+    path: String,
+    entries: Vec<Entry>,
+    /// The files in the folder and below it.
+    total: usize,
+}
+
+enum Entry {
+    /// A file of the survey, by index.
+    File(usize),
+    Folder(Folder),
+}
+
+impl Entry {
+    fn total(&self) -> usize {
+        match self {
+            Self::File(_) => 1,
+            Self::Folder(folder) => folder.total,
+        }
+    }
+}
+
+impl Folder {
+    fn new(path: String) -> Self {
+        Self {
+            path,
+            entries: Vec::new(),
+            total: 0,
+        }
+    }
+
+    /// Add `file`, which lies in the folders `folders` below this one.
+    fn insert(&mut self, file: usize, folders: &[&str]) {
+        self.total += 1;
+        let Some((name, rest)) = folders.split_first() else {
+            self.entries.push(Entry::File(file));
+            return;
+        };
+        let path = if self.path.is_empty() {
+            (*name).to_string()
+        } else {
+            format!("{}/{name}", self.path)
+        };
+        let at = match self
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, Entry::Folder(folder) if folder.path == path))
+        {
+            Some(at) => at,
+            None => {
+                self.entries.push(Entry::Folder(Folder::new(path)));
+                self.entries.len() - 1
+            }
+        };
+        if let Entry::Folder(folder) = &mut self.entries[at] {
+            folder.insert(file, rest);
+        }
+    }
+
+    /// The files in the folder and below it, in walk order.
+    fn files(&self) -> Vec<usize> {
+        let mut files = Vec::with_capacity(self.total);
+        for entry in &self.entries {
+            match entry {
+                Entry::File(file) => files.push(*file),
+                Entry::Folder(folder) => files.extend(folder.files()),
+            }
+        }
+        files
+    }
+
+    /// The folder that is all this one holds.
+    fn only_folder(&self) -> Option<&Folder> {
+        match self.entries.as_slice() {
+            [Entry::Folder(only)] => Some(only),
+            _ => None,
+        }
+    }
+}
+
+/// What the rows of the tree are made from.
+struct TreeView<'a> {
+    codebase: &'a Codebase,
+    door_files: &'a BTreeSet<usize>,
+    words: &'a Words,
+    /// The levels of folders that are opened.
+    rings: usize,
+    /// What the call that opens the root names: the `implicit_path` of the scan.
+    scanned: &'a str,
+    /// The absolute folder that the shown paths are relative to, when it is not the project.
+    prefix: Option<&'a str>,
+}
+
+impl TreeView<'_> {
+    /// The rows of `folder`, `depth` levels below the root, in at most `budget` rows.
+    fn rows(&self, folder: &Folder, depth: usize, budget: usize, out: &mut Vec<String>) {
+        if folder.total <= budget {
+            out.extend(folder.files().into_iter().map(|file| self.file_row(file)));
+            return;
+        }
+        if let Some(only) = folder.only_folder() {
+            self.rows(only, depth, budget, out);
+            return;
+        }
+        // More entries than rows leave no row for each of them: list the files.
+        if depth >= self.rings || folder.entries.len() > budget {
+            self.flat(folder, budget, out);
+            return;
+        }
+        let sizes: Vec<usize> = folder.entries.iter().map(Entry::total).collect();
+        for (entry, rows) in folder.entries.iter().zip(allocate(&sizes, budget)) {
+            match entry {
+                Entry::File(file) => out.push(self.file_row(*file)),
+                Entry::Folder(sub) => self.rows(sub, depth + 1, rows, out),
+            }
+        }
+    }
+
+    /// The first files of `folder` in walk order, then one collapsed row for the rest.
+    fn flat(&self, folder: &Folder, budget: usize, out: &mut Vec<String>) {
+        let files = folder.files();
+        let shown = budget.saturating_sub(1).min(files.len());
+        out.extend(files[..shown].iter().map(|&file| self.file_row(file)));
+        out.push(self.fold_row(folder, shown > 0, &files[shown..]));
+    }
+
+    fn file_row(&self, file: usize) -> String {
+        let (label, facts) = &self.codebase.files[file];
+        let raw_tag = self.codebase.file_tags[file];
+        let effective_tag = if self.door_files.contains(&file) && raw_tag == Tag::Detail {
             Tag::Door
         } else {
             raw_tag
@@ -833,52 +1024,138 @@ fn render_tree(
                 .filter(|d| d.exported)
                 .map(|d| d.symbol.name.clone())
                 .collect();
-            words.top(&names, 3).join(" ")
+            self.words.top(&names, 3).join(" ")
         });
 
         // Top 3 names.
-        let top_names: Vec<&str> = codebase
+        let top_names: Vec<&str> = self
+            .codebase
             .headline(file)
             .iter()
             .take(3)
-            .map(|&node| codebase.def(node).symbol.name.as_str())
+            .map(|&node| self.codebase.def(node).symbol.name.as_str())
             .collect();
 
-        let gist_part = cut(&gist, 36);
-        let row = fit(&format!(
+        fit(&format!(
             "{label}  {tag}{sep}{gist}  {names}",
             label = label,
             tag = tag_str,
             sep = if tag_str.is_empty() { "" } else { "  " },
-            gist = gist_part,
+            gist = cut(&gist, 36),
             names = top_names.join(" "),
-        ));
-        all_rows.push(row);
+        ))
     }
 
-    if all_rows.len() <= budget {
-        return all_rows;
+    /// The collapsed row of `folder`: how many files it hides, the names of the first of them and
+    /// the call that opens the folder. The call keeps its full length; the names give way to it.
+    fn fold_row(&self, folder: &Folder, some_shown: bool, hidden: &[usize]) -> String {
+        let label = if folder.path.is_empty() {
+            "."
+        } else {
+            folder.path.as_str()
+        };
+        let head = format!(
+            "{}{} files in {label}/",
+            if some_shown { "+" } else { "" },
+            hidden.len()
+        );
+        let tail = format!(
+            "> langtool_summarize_codebase implicit_path={}",
+            self.open_path(folder)
+        );
+        let mut names: Vec<&str> = Vec::new();
+        for &file in hidden.iter().take(FOLD_PREVIEW) {
+            if let Some(&node) = self.codebase.headline(file).first() {
+                let name = self.codebase.def(node).symbol.name.as_str();
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        let names = names.join(" ");
+        // The head, `: ` before the names and two spaces before the call share one row.
+        let room = ROW.saturating_sub(head.chars().count() + tail.chars().count() + 4);
+        if names.is_empty() || room < MIN_PREVIEW {
+            format!("{head}  {tail}")
+        } else {
+            format!("{head}: {}  {tail}", cut(&names, room))
+        }
     }
 
-    let shown = budget.saturating_sub(1);
-    let mut rows: Vec<String> = all_rows[..shown].to_vec();
-    let hidden = all_rows.len() - shown;
-    let top_hidden_names: Vec<&str> = (shown..all_rows.len())
-        .take(5)
-        .flat_map(|fi| {
-            codebase
-                .headline(fi)
-                .into_iter()
-                .take(1)
-                .map(|node| codebase.def(node).symbol.name.as_str())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let path_arg = implicit_path.unwrap_or(".");
-    let next_zoom = zoom.next().map(|z| z.name()).unwrap_or("max");
-    rows.push(fit(&format!(
-        "+{hidden} files: {names}  > langtool_summarize_codebase implicit_path={path_arg} zoom={next_zoom}",
-        names = top_hidden_names.join(" "),
-    )));
+    /// The `implicit_path` that opens `folder`.
+    fn open_path(&self, folder: &Folder) -> String {
+        if folder.path.is_empty() {
+            return self.scanned.to_string();
+        }
+        match self.prefix {
+            Some(base) => format!("{base}/{}", folder.path),
+            None => folder.path.clone(),
+        }
+    }
+}
+
+/// How `budget` rows are shared among units that hold `sizes` files: every unit gets one row, and
+/// the rest goes to the units that still hide files, in proportion to their size. A unit gets no
+/// more rows than it has files. `sizes` has at most `budget` units, none of them empty.
+fn allocate(sizes: &[usize], budget: usize) -> Vec<usize> {
+    let mut rows = vec![1; sizes.len()];
+    let mut spare = budget.saturating_sub(sizes.len());
+    while spare > 0 {
+        let open: Vec<usize> = (0..sizes.len()).filter(|&i| rows[i] < sizes[i]).collect();
+        if open.is_empty() {
+            break;
+        }
+        let weight: usize = open.iter().map(|&i| sizes[i]).sum();
+        let mut given = 0;
+        for &i in &open {
+            let share = (spare * sizes[i] / weight).min(sizes[i] - rows[i]);
+            rows[i] += share;
+            given += share;
+        }
+        if given > 0 {
+            spare -= given;
+            continue;
+        }
+        // Fewer spare rows than units hide files: the largest units get one each, the earlier first.
+        let mut order = open;
+        order.sort_by(|&a, &b| sizes[b].cmp(&sizes[a]).then(a.cmp(&b)));
+        for &i in order.iter().take(spare) {
+            rows[i] += 1;
+        }
+        spare = 0;
+    }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(source: &str) -> FileFacts {
+        read_facts(registry::for_path("a.rs").unwrap(), source).unwrap()
+    }
+
+    const TWO_TYPES: &str = "pub struct A;\nimpl A {\n    pub fn new() -> A {\n        A\n    }\n}\npub struct B;\nimpl B {\n    pub fn new() -> B {\n        B\n    }\n}\n";
+
+    #[test]
+    fn a_change_to_one_of_two_same_named_methods_is_reported_for_that_one() {
+        let now = TWO_TYPES.replace("pub fn new() -> A", "pub fn new(id: u32) -> A");
+        let delta = delta_of(&read(TWO_TYPES), &read(&now));
+        assert_eq!(delta.as_deref(), Some("Δ ~A::new"));
+    }
+
+    #[test]
+    fn a_method_added_to_a_second_type_is_not_taken_for_the_first() {
+        let before = "pub struct A;\nimpl A {\n    pub fn new() -> A {\n        A\n    }\n}\npub struct B;\n";
+        let delta = delta_of(&read(before), &read(TWO_TYPES));
+        assert_eq!(delta.as_deref(), Some("Δ +B::new"));
+    }
+
+    #[test]
+    fn trait_impls_of_one_type_stay_apart() {
+        let before = "pub trait Show {\n    fn show(&self) -> String;\n}\npub struct X;\nimpl Show for X {\n    fn show(&self) -> String {\n        String::new()\n    }\n}\nimpl X {\n    pub fn show(&self) -> u32 {\n        0\n    }\n}\n";
+        let now = before.replace("-> u32", "-> u64");
+        let delta = delta_of(&read(before), &read(&now));
+        assert_eq!(delta.as_deref(), Some("Δ ~X::show"));
+    }
 }

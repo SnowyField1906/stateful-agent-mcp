@@ -5,8 +5,8 @@ use stateful_agent_common::{AgentError, Result, ServerConfig, Workspace};
 use stateful_agent_langtool::engine::lens::store::FactStore;
 use stateful_agent_langtool::tools::{
     FindReferencesParams, FindSymbolsParams, ReadFileParams, RunActionParams,
-    SummarizeCodebaseParams, ViewCallgraphParams, find_references, find_symbols, read_file,
-    run_action, summarize_codebase, view_callgraph,
+    SummarizeCodebaseParams, SummarizeFeatureParams, ViewCallgraphParams, find_references,
+    find_symbols, read_file, run_action, summarize_codebase, summarize_feature, view_callgraph,
 };
 use stateful_agent_testkit::{FixedWorkspace, TempDir};
 
@@ -61,6 +61,10 @@ impl Tools {
             &FactStore::new(64),
             p,
         )
+    }
+
+    pub fn langtool_summarize_feature(&self, p: SummarizeFeatureParams) -> Result<String> {
+        summarize_feature::summarize_feature(self.workspace(), &self.config, &FactStore::new(64), p)
     }
 
     pub fn langtool_run_action(&self, p: RunActionParams) -> Result<String> {

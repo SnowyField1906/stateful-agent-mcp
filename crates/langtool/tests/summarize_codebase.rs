@@ -140,3 +140,89 @@ fn three_uncalled_methods_are_not_counted() {
 
     assert!(!out.contains("no callers"), "{out}");
 }
+
+const CRATES: usize = 7;
+const FILES_PER_CRATE: usize = 12;
+
+/// `crates/c0` .. `crates/c6`, each with twelve files in `src/`. Every file holds one function with
+/// a long name, so that the names a collapsed row previews overflow the row.
+fn workspace() -> TempDir {
+    let dir = TempDir::new("summarize_tree");
+    for krate in 0..CRATES {
+        for file in 0..FILES_PER_CRATE {
+            dir.write(
+                &format!("crates/c{krate}/src/f{file}.rs"),
+                &format!(
+                    "pub fn a_rather_long_function_name_of_crate_{krate}_in_file_{file}() {{}}\n"
+                ),
+            );
+        }
+    }
+    dir
+}
+
+/// The rows of the folder tree: the ones that start with a shown path and the collapsed ones.
+fn tree_rows(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|line| {
+            line.starts_with("crates/") || (line.starts_with('+') && line.contains(" files in "))
+        })
+        .collect()
+}
+
+#[test]
+fn every_folder_keeps_rows_of_its_own_when_the_files_outnumber_the_rows() {
+    let out = overview(&workspace());
+    let rows = tree_rows(&out);
+
+    assert!(rows.len() <= 48, "{} rows\n{out}", rows.len());
+    for krate in 0..CRATES {
+        let folder = format!("crates/c{krate}/");
+        assert!(
+            rows.iter()
+                .any(|row| row.starts_with(&folder) || row.contains(&format!("files in {folder}"))),
+            "no row for {folder}\n{out}"
+        );
+    }
+}
+
+#[test]
+fn a_collapsed_row_keeps_the_call_that_opens_its_folder() {
+    let out = overview(&workspace());
+    let rows = tree_rows(&out);
+
+    for krate in 0..CRATES {
+        let call = format!("> langtool_summarize_codebase implicit_path=crates/c{krate}/src");
+        let row = rows
+            .iter()
+            .find(|row| row.contains(&format!("files in crates/c{krate}/src/")))
+            .unwrap_or_else(|| panic!("no collapsed row for c{krate}\n{out}"));
+        assert!(row.ends_with(&call), "{row}");
+        assert!(row.chars().count() <= 120, "{row}");
+    }
+}
+
+#[test]
+fn a_folder_that_fits_is_listed_whole() {
+    let dir = TempDir::new("summarize_tree_small");
+    for file in 0..5 {
+        dir.write(&format!("crates/a/src/f{file}.rs"), "pub fn f() {}\n");
+    }
+    let out = overview(&dir);
+
+    assert_eq!(tree_rows(&out).len(), 5, "{out}");
+    assert!(!out.contains("files in"), "{out}");
+}
+
+#[test]
+fn functions_inside_a_test_module_count_in_the_test_share() {
+    let dir = TempDir::new("summarize_test_share");
+    dir.write(
+        "src/lib.rs",
+        "pub fn a() {}\npub fn b() {}\n\n#[cfg(test)]\nmod tests {\n    fn check_a() {}\n    fn check_b() {}\n}\n",
+    );
+    let out = overview(&dir);
+
+    // The module and the two functions inside it are test code: three of five definitions.
+    assert!(out.contains("5 defs (60% test)"), "{out}");
+}

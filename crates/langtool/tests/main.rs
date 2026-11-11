@@ -9,6 +9,7 @@ mod lens_graph;
 mod read_file;
 mod run_action;
 mod summarize_codebase;
+mod summarize_feature;
 mod summarize_symbol;
 mod support;
 mod view_callgraph;

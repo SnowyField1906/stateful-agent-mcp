@@ -44,6 +44,38 @@ fn near(left: f64, right: f64) -> bool {
     (left - right).abs() < 1e-9
 }
 
+fn survey_owned(sources: &[(String, String)]) -> Files {
+    let borrowed: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(name, source)| (name.as_str(), source.as_str()))
+        .collect();
+    survey(&borrowed)
+}
+
+/// The nodes that `node` mentions.
+fn targets(graph: &Graph, node: usize) -> Vec<usize> {
+    graph.uses(node).iter().map(|edge| edge.to).collect()
+}
+
+/// `count` files `t0.rs`, `t1.rs`, ... each declaring a type `T0`, `T1`, ... with a `parse` method.
+fn typed_parsers(count: usize) -> Vec<(String, String)> {
+    (0..count)
+        .map(|at| {
+            (
+                format!("t{at}.rs"),
+                format!("pub struct T{at};\n\nimpl T{at} {{\n    pub fn parse(&self) {{}}\n}}\n"),
+            )
+        })
+        .collect()
+}
+
+/// `count` files `m0.rs`, `m1.rs`, ... each with a free function `name`.
+fn free_functions(name: &str, count: usize) -> Vec<(String, String)> {
+    (0..count)
+        .map(|at| (format!("m{at}.rs"), format!("pub fn {name}() {{}}\n")))
+        .collect()
+}
+
 #[test]
 fn a_name_defined_once_is_a_full_edge() {
     let files = survey(&[
@@ -166,6 +198,206 @@ fn a_name_is_counted_as_common_within_its_project_only() {
     let edges = graph.uses(run);
     assert_eq!(edges.len(), 1);
     assert!(near(edges[0].weight, 1.0));
+}
+
+#[test]
+fn a_method_of_the_enclosing_type_is_found_among_many_of_the_same_name() {
+    let mut sources = typed_parsers(7);
+    sources.push((
+        "caller.rs".into(),
+        "impl T3 {\n    pub fn run(&self) {\n        self.parse();\n    }\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let own = node(&files, &graph, "t3.rs", "parse");
+    let edges = graph.uses(run);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].to, own);
+    assert!(near(edges[0].weight, 1.0));
+}
+
+#[test]
+fn a_path_through_a_type_name_reaches_the_methods_of_that_type() {
+    let mut sources = typed_parsers(7);
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run(t: &T3) {\n    T3::parse(t);\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let found = targets(&graph, run);
+    assert!(found.contains(&node(&files, &graph, "t3.rs", "parse")));
+    for other in [0, 1, 2, 4, 5, 6] {
+        let parse = node(&files, &graph, &format!("t{other}.rs"), "parse");
+        assert!(!found.contains(&parse), "T{other}::parse");
+    }
+}
+
+#[test]
+fn a_method_on_a_receiver_of_known_type_reaches_the_methods_of_that_type() {
+    let mut sources = typed_parsers(7);
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run(t: &T3) {\n    t.parse();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let found = targets(&graph, run);
+    assert!(found.contains(&node(&files, &graph, "t3.rs", "parse")));
+    assert!(!found.contains(&node(&files, &graph, "t0.rs", "parse")));
+}
+
+#[test]
+fn a_method_on_a_trait_object_reaches_the_trait_and_its_implementations() {
+    let mut sources = typed_parsers(6);
+    sources.push((
+        "p.rs".into(),
+        "pub trait Parser {\n    fn parse(&self);\n}\n".into(),
+    ));
+    for name in ["a", "b"] {
+        let ty = name.to_uppercase();
+        sources.push((
+            format!("{name}.rs"),
+            format!("pub struct {ty};\n\nimpl Parser for {ty} {{\n    fn parse(&self) {{}}\n}}\n"),
+        ));
+    }
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run(p: &dyn Parser) {\n    p.parse();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let found = targets(&graph, run);
+    for name in ["a", "b"] {
+        let parse = node(&files, &graph, &format!("{name}.rs"), "parse");
+        assert!(found.contains(&parse), "{name}.rs");
+    }
+    for other in 0..6 {
+        let parse = node(&files, &graph, &format!("t{other}.rs"), "parse");
+        assert!(!found.contains(&parse), "T{other}::parse");
+    }
+}
+
+#[test]
+fn a_path_through_a_module_reaches_the_functions_of_that_module() {
+    let mut sources = free_functions("parse", 6);
+    sources.push(("other.rs".into(), "pub fn parse() {}\n".into()));
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run() {\n    other::parse();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let edges = graph.uses(run);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].to, node(&files, &graph, "other.rs", "parse"));
+    assert!(near(edges[0].weight, 1.0));
+}
+
+#[test]
+fn an_import_from_a_module_reaches_the_functions_of_that_module() {
+    let mut sources = free_functions("parse", 6);
+    sources.push(("other.rs".into(), "pub fn parse() {}\n".into()));
+    sources.push((
+        "caller.rs".into(),
+        "use crate::other::parse;\n\npub fn run() {\n    parse();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let edges = graph.uses(run);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].to, node(&files, &graph, "other.rs", "parse"));
+    assert!(near(edges[0].weight, 1.0));
+}
+
+#[test]
+fn a_wrapper_that_delegates_to_another_module_keeps_that_edge() {
+    let files = survey(&[
+        ("other.rs", "pub fn parse() {}\n"),
+        (
+            "wrapper.rs",
+            "use crate::other::parse as other_parse;\n\npub fn parse() {\n    other_parse();\n}\n",
+        ),
+    ]);
+    let graph = graph(&files);
+    let wrapper = node(&files, &graph, "wrapper.rs", "parse");
+    let edges = graph.uses(wrapper);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].to, node(&files, &graph, "other.rs", "parse"));
+    assert!(near(edges[0].weight, 1.0));
+}
+
+#[test]
+fn a_qualifier_that_no_definition_fits_leaves_the_name_to_the_other_rules() {
+    let files = survey(&[
+        ("a.rs", "pub fn parse() {}\n"),
+        ("b.rs", "pub fn run() {\n    Missing::parse();\n}\n"),
+    ]);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "b.rs", "run");
+    let edges = graph.uses(run);
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].to, node(&files, &graph, "a.rs", "parse"));
+}
+
+#[test]
+fn a_path_through_an_import_of_a_dependency_is_not_a_project_module() {
+    let mut sources = free_functions("read", 6);
+    sources.push(("fs.rs".into(), "pub fn read() {}\n".into()));
+    sources.push((
+        "caller.rs".into(),
+        "use std::fs;\n\npub fn run() {\n    fs::read();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let caller = files
+        .iter()
+        .position(|(label, _)| label == "caller.rs")
+        .unwrap();
+    let graph = Graph::build(&files, &one_project(&files), &|file, name| {
+        file == caller && name == "fs"
+    });
+    let run = node(&files, &graph, "caller.rs", "run");
+    assert!(graph.uses(run).is_empty());
+}
+
+#[test]
+fn a_narrowed_set_of_six_or_more_is_dropped_like_any_common_name() {
+    // `Dyn` reaches the trait and every implementation: seven definitions of `parse`.
+    let mut sources = vec![(
+        "p.rs".to_string(),
+        "pub trait Parser {\n    fn parse(&self);\n}\n".to_string(),
+    )];
+    for at in 0..6 {
+        sources.push((
+            format!("i{at}.rs"),
+            format!(
+                "pub struct I{at};\n\nimpl Parser for I{at} {{\n    fn parse(&self) {{}}\n}}\n"
+            ),
+        ));
+    }
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run(p: &dyn Parser) {\n    p.parse();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let named = |to: usize| {
+        let id = graph.id(to);
+        files[id.file].1.defs[id.def].symbol.name.clone()
+    };
+    // The type of the receiver stays a mention; none of the seven `parse` methods does.
+    assert!(
+        targets(&graph, run)
+            .into_iter()
+            .all(|to| named(to) != "parse")
+    );
 }
 
 #[test]

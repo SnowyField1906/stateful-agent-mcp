@@ -15,6 +15,12 @@ const SAME_OWNER_WEIGHT: f64 = 0.5;
 const SAME_FILE_WEIGHT: f64 = 0.2;
 /// The share of the walk that returns to the seeds each round.
 const RESTART: f64 = 0.3;
+/// The rounds of the walk, at every zoom. Fewer rounds could not reach the collaborators two hops
+/// from a seed, and a count that follows the zoom would reorder the slice from one zoom to the
+/// next. With a restart of 0.3, 0.7^4 (about 24%) of the weight has not returned to a seed after
+/// four rounds, so the walk reaches definitions up to four links away. The graph holds a few
+/// thousand nodes, so four rounds cost little.
+const ROUNDS: usize = 4;
 /// A group of siblings or a file with more definitions than this links nothing: it says too
 /// little about any one of them.
 const MAX_GROUP: usize = 24;
@@ -80,9 +86,9 @@ fn links(codebase: &Codebase) -> Vec<Vec<(usize, f64)>> {
         .collect()
 }
 
-/// The weight of every definition after `rings` rounds of the walk from `seeds`, by node. Each
+/// The weight of every definition after [`ROUNDS`] rounds of the walk from `seeds`, by node. Each
 /// round a definition passes its weight to its links and the seeds get 30% of the start back.
-pub fn diffuse(codebase: &Codebase, seeds: &[usize], rings: usize) -> Vec<f64> {
+pub fn diffuse(codebase: &Codebase, seeds: &[usize]) -> Vec<f64> {
     let mut start = vec![0.0; codebase.graph.len()];
     if seeds.is_empty() {
         return start;
@@ -93,7 +99,7 @@ pub fn diffuse(codebase: &Codebase, seeds: &[usize], rings: usize) -> Vec<f64> {
     }
     let links = links(codebase);
     let mut now = start.clone();
-    for _ in 0..rings.max(1) {
+    for _ in 0..ROUNDS {
         let mut next: Vec<f64> = start.iter().map(|p| p * RESTART).collect();
         for (node, &mass) in now.iter().enumerate() {
             if mass <= 0.0 {

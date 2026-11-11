@@ -2,14 +2,24 @@
 //!
 //! A definition `D` mentions the names in its signature and body (`FileFacts` keeps them as
 //! [`Use`](crate::engine::dependencies::Use)s). The name is matched to the definitions called that
-//! in the survey, with no resolution of types or imports beyond two rules read from the code:
+//! in the survey, with no resolution of types beyond three rules read from the code:
 //!
+//! - A call that says where it goes keeps only the definitions it can reach (`narrowed`):
+//!   `self.f()` and `Self::f()` reach the methods of the enclosing type, `x.f()` on a receiver of
+//!   known type and `Type::f()` those of that type, a call on a trait object those of the trait and
+//!   its implementations, and `module::f()` or an import of `f` from `module` the definitions of a
+//!   file or inline module of that name. When no candidate fits the way the call is written, the
+//!   call says nothing and the rules below apply. A call narrowed this way is not shadowed by a
+//!   definition of the same name in its own file: a wrapper `parse` that delegates to
+//!   `other::parse` mentions that one.
 //! - A name that the file defines itself means those definitions: a file that has its own `parse`
 //!   does not mention anyone else's.
 //! - Otherwise a name that an import of the file binds to the standard library or a dependency
 //!   (the `outside` test of [`Graph::build`]) mentions nothing of the project, and a name that the
 //!   survey defines six or more times (`new`, `fmt`) says too little about where it goes: both are
-//!   dropped. The limit is derived from the data, there is no list of names.
+//!   dropped. The count is taken after narrowing, so `new` called as `Store::new()` is not lost
+//!   among the other `new`s of the project. The limit is derived from the data, there is no list
+//!   of names.
 //!
 //! - A mention never crosses projects. The survey of a folder that holds several projects (each
 //!   with its own manifest) matches names inside each project alone: a name that another project
@@ -33,8 +43,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::facts::{Def, FileFacts};
+use crate::engine::index::{in_module_at, names_a_type};
 use crate::engine::references::Role;
 use crate::engine::scope::bare_name;
+use crate::language::{CallKind, CallSite, Import, registry};
 
 /// A name defined this many times in the survey tells nothing about where a mention goes.
 const COMMON: usize = 6;
@@ -171,35 +183,41 @@ impl Graph {
             } else {
                 1.0
             };
-            let mut roles: BTreeMap<&str, Vec<Role>> = BTreeMap::new();
+            let mut mentions: BTreeMap<&str, Mention<'_>> = BTreeMap::new();
             for used in &def.uses {
-                roles
-                    .entry(bare_name(&used.name))
-                    .or_default()
-                    .push(used.role);
+                let mention = mentions.entry(bare_name(&used.name)).or_default();
+                mention.roles.push(used.role);
+                mention.sites.extend(used.site.as_ref());
             }
-            for (name, roles) in roles {
+            for (name, mention) in mentions {
                 let Some(defined) = named.get(&(projects[id.file], name)) else {
                     continue;
                 };
-                let local: Vec<usize> = defined
-                    .iter()
-                    .copied()
-                    .filter(|&target| ids[target].file == id.file)
-                    .collect();
-                let candidates: &[usize] = if local.is_empty() {
-                    if defined.len() >= COMMON || outside(id.file, name) {
-                        continue;
-                    }
-                    defined
-                } else {
-                    &local
-                };
+                let candidates: Vec<usize> =
+                    match narrowed(files, &ids, defined, &mention.sites, *id, outside) {
+                        Some(found) if found.len() >= COMMON => continue,
+                        Some(found) => found,
+                        None => {
+                            let local: Vec<usize> = defined
+                                .iter()
+                                .copied()
+                                .filter(|&target| ids[target].file == id.file)
+                                .collect();
+                            if !local.is_empty() {
+                                local
+                            } else if defined.len() >= COMMON || outside(id.file, name) {
+                                continue;
+                            } else {
+                                defined.clone()
+                            }
+                        }
+                    };
                 // The way the name is written must suit the definition: a type is named as a type.
                 let targets: Vec<(usize, f64)> = candidates
                     .iter()
                     .map(|&target| {
-                        let fit = roles
+                        let fit = mention
+                            .roles
                             .iter()
                             .map(|&role| fit(role, def_of(ids[target])))
                             .fold(0.0, f64::max);
@@ -369,6 +387,124 @@ fn encloses(files: &[(String, Arc<FileFacts>)], outer: DefId, inner: DefId) -> b
         at = defs[parent].parent;
     }
     false
+}
+
+/// How one definition writes one name: the roles it has there and the call sites that tell how a
+/// call was written.
+#[derive(Default)]
+struct Mention<'a> {
+    roles: Vec<Role>,
+    sites: Vec<&'a CallSite>,
+}
+
+/// The definitions among `defined` that the calls of `sites` can reach, as nodes, or `None` when
+/// the way the name is written does not tell: a bare name, a call on a value of unknown type, a
+/// qualifier that no candidate fits. When the name is called in several ways, a way that says
+/// nothing leaves every candidate open.
+fn narrowed(
+    files: &[(String, Arc<FileFacts>)],
+    ids: &[DefId],
+    defined: &[usize],
+    sites: &[&CallSite],
+    caller: DefId,
+    outside: &dyn Fn(usize, &str) -> bool,
+) -> Option<Vec<usize>> {
+    let mut found: BTreeSet<usize> = BTreeSet::new();
+    for site in sites {
+        found.extend(narrowed_by(files, ids, defined, site, caller, outside)?);
+    }
+    (!found.is_empty()).then(|| found.into_iter().collect())
+}
+
+/// The definitions among `defined` that one call can reach; `None` when it says nothing.
+fn narrowed_by(
+    files: &[(String, Arc<FileFacts>)],
+    ids: &[DefId],
+    defined: &[usize],
+    site: &CallSite,
+    caller: DefId,
+    outside: &dyn Fn(usize, &str) -> bool,
+) -> Option<Vec<usize>> {
+    let (label, facts) = &files[caller.file];
+    let scope_of = |target: usize| &files[ids[target].file].1.defs[ids[target].def].symbol.scope;
+    let in_module = |target: usize, module: &str| {
+        in_module_at(&files[ids[target].file].0, scope_of(target), module)
+    };
+    let pick = |keep: &dyn Fn(usize) -> bool| -> Vec<usize> {
+        defined
+            .iter()
+            .copied()
+            .filter(|&target| keep(target))
+            .collect()
+    };
+    let of_type = |ty: &str| {
+        let ty = bare_name(ty);
+        pick(&|target| {
+            scope_of(target)
+                .owner()
+                .is_some_and(|owner| owner.bare_name() == ty)
+        })
+    };
+    let found = match &site.kind {
+        CallKind::Own => {
+            let own = facts.defs[caller.def]
+                .symbol
+                .scope
+                .frames()
+                .iter()
+                .rev()
+                .find(|frame| frame.is_owner())?;
+            // A default method of a trait calls the trait's methods and those of its implementations.
+            pick(&|target| {
+                scope_of(target).owner().is_some_and(|owner| {
+                    owner.bare_name() == own.bare_name()
+                        || (own.kind.interface && owner.implements(own.bare_name()))
+                })
+            })
+        }
+        CallKind::MethodOf(ty) => of_type(ty),
+        CallKind::Dyn(name) => pick(&|target| {
+            scope_of(target)
+                .owner()
+                .is_some_and(|owner| owner.implements(name))
+        }),
+        CallKind::Path(segment) if names_a_type(label, segment) => of_type(segment),
+        CallKind::Path(module) => {
+            // `fs::read(..)` through an import of the standard library or a dependency is not a
+            // project module that happens to have the same name.
+            if site
+                .root
+                .as_deref()
+                .is_some_and(|root| outside(caller.file, root))
+            {
+                return None;
+            }
+            pick(&|target| in_module(target, module))
+        }
+        CallKind::Free | CallKind::Any => {
+            if outside(caller.file, &site.name) {
+                return None;
+            }
+            let module = imported_module(label, &facts.imports, &site.name)?;
+            pick(&|target| in_module(target, module))
+        }
+        CallKind::Method => return None,
+    };
+    (!found.is_empty()).then_some(found)
+}
+
+/// The module that an import of the file takes `name` from (`other` for `use crate::other::name`).
+/// `crate`, `self` and `super` name a place in the module tree, not a module.
+fn imported_module<'a>(label: &str, imports: &'a [Import], name: &str) -> Option<&'a str> {
+    let syntax = registry::for_path(label);
+    imports
+        .iter()
+        .filter(|import| {
+            import.local != "*" && import.path.last().map(String::as_str) == Some(name)
+        })
+        .filter_map(|import| import.path.iter().rev().nth(1))
+        .map(String::as_str)
+        .find(|module| !syntax.is_some_and(|syntax| syntax.is_path_keyword(module)))
 }
 
 fn tags(loads: &[Load], exported: &[bool]) -> Vec<Tag> {

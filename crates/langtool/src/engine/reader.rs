@@ -9,7 +9,6 @@ use super::scan::unsupported_message;
 use super::selector::SymbolSelector;
 use super::symbols::{self, Symbol};
 use crate::common::fs::resolve::{Scope, Target};
-use crate::common::text::clip;
 use crate::common::{AgentError, Range, Result, Workspace, root_of};
 use crate::language::registry;
 
@@ -18,7 +17,6 @@ const DEFAULT_LINES: usize = 400;
 /// Largest explicit window.
 const MAX_LINES: usize = 2000;
 const MAX_FILE_BYTES: u64 = 16 << 20;
-const LINE_CLIP: usize = 500;
 /// Definitions shown for one `symbol`.
 const MAX_SYMBOL_HITS: usize = 8;
 
@@ -253,7 +251,7 @@ impl<'a> View<'a> {
             out.push_str(locator);
             out.push('\t');
         }
-        out.push_str(&clip(text, LINE_CLIP));
+        out.push_str(text);
         out.push('\n');
     }
 }

@@ -46,6 +46,32 @@ fn read_file_accepts_absolute_paths_without_a_registered_project() {
 }
 
 #[test]
+fn a_line_is_read_whole_however_long_it_is() {
+    let tmp = TempDir::new("long-line-read");
+    let long = "x".repeat(5000);
+    tmp.write("data/wide.lua", &format!("first\n{long}\nlast\n"));
+    let state = Tools::new(ServerConfig::default());
+
+    let file = tmp
+        .root
+        .join("data/wide.lua")
+        .to_string_lossy()
+        .into_owned();
+    let read = state
+        .langtool_read_file(ReadFileParams {
+            files: vec![ReadFileEntry {
+                file_path: file,
+                numbered: Some(false),
+                ..ReadFileEntry::default()
+            }],
+            at_implicit_id: None,
+        })
+        .unwrap();
+    assert!(read.contains(&format!("\n{long}\n")), "the line was cut");
+    assert!(!read.contains("chars]"), "{}", &read[..200.min(read.len())]);
+}
+
+#[test]
 fn read_file_params_accept_files_as_a_json_string_and_hints_otherwise() {
     let ok: ReadFileParams =
         serde_json::from_value(serde_json::json!({ "files": "[{\"file_path\": \"a.txt\"}]" }))

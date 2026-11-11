@@ -100,7 +100,13 @@ pub(super) fn names_a_type(file: &str, name: &str) -> bool {
 /// Whether `def` is in the module named `module`: its file, the folder of a module entry file
 /// (`mod.rs`, `__init__.py`), or an inline module.
 pub(super) fn in_module(def: &Entry, module: &str) -> bool {
-    let path = Path::new(&def.file);
+    in_module_at(&def.file, &def.func.scope, module)
+}
+
+/// Whether a definition written in `file`, inside the definitions of `scope`, is in the module
+/// named `module`: [`in_module`] for a definition that is not an [`Entry`].
+pub(super) fn in_module_at(file: &str, scope: &Lineage, module: &str) -> bool {
+    let path = Path::new(file);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let dir = path
         .parent()
@@ -109,11 +115,9 @@ pub(super) fn in_module(def: &Entry, module: &str) -> bool {
         .unwrap_or("");
     stem == module
         || (dir == module
-            && registry::for_path(&def.file)
+            && registry::for_path(file)
                 .is_some_and(|syntax| syntax.module_entry_stems().contains(&stem)))
-        || def
-            .func
-            .scope
+        || scope
             .innermost()
             .is_some_and(|frame| frame.kind.module && frame.name == module)
 }

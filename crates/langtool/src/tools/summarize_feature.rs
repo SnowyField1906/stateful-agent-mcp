@@ -2,6 +2,11 @@
 //! graph: the seeds, the core around them, the types they work on, what they use from outside the
 //! slice, the way in from an entry point, the tests and a plan of line ranges to read.
 //!
+//! The slice does not depend on the zoom: the seeds, the walk over the graph and therefore the order
+//! of every list are the same at all zooms. The zoom only sets how much of each list is shown (the
+//! rows of a section, the size of the core, the line ceiling) and how far the way in looks, so a
+//! higher zoom shows a longer prefix of each list that a lower zoom shows.
+//!
 //! Token safety: the words and names of the input are capped, every section is packed into at most
 //! `zoom.rows() / 12` rows of one line each, a read range is clipped to [`MAX_READ_SPAN`] lines, and
 //! the whole body is cut at `zoom.rows()` rows.
@@ -38,6 +43,8 @@ const MAX_QUERY: usize = 200;
 const MAX_WORDS: usize = 12;
 /// The most names that take part.
 const MAX_NAMES: usize = 6;
+/// The most seeds that a lookup by words gives, at every zoom.
+const MAX_SEEDS: usize = 8;
 /// The most lines of one definition that the read plan sends the agent to.
 const MAX_READ_SPAN: usize = 80;
 /// Ranges of one file closer than this many lines are read as one.
@@ -182,7 +189,7 @@ pub fn summarize_feature(
             ));
         }
         label = words.join(" ");
-        seeds = lookup(&codebase, &words, 2 + 2 * zoom.rings())
+        seeds = lookup(&codebase, &words, MAX_SEEDS)
             .into_iter()
             .map(|hit| hit.node)
             .collect();
@@ -200,7 +207,7 @@ pub fn summarize_feature(
     // The slice.
     let rows_cap = (zoom.rows() / 12).max(2);
     let slice_limit = zoom.rows() / 4;
-    let weight = diffuse(&codebase, &seeds, zoom.rings());
+    let weight = diffuse(&codebase, &seeds);
     let seed_set: BTreeSet<usize> = seeds.iter().copied().collect();
     let mut core: Vec<usize> = (0..weight.len())
         .filter(|n| weight[*n] > 0.0 && codebase.listed(*n) && !seed_set.contains(n))
