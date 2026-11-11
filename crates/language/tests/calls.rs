@@ -30,6 +30,23 @@ fn a_call_site_names_what_call_name_names() {
 }
 
 #[test]
+fn a_language_whose_types_do_not_inherit_has_no_class() {
+    for syntax in syntaxes() {
+        if syntax.types_inherit_methods() {
+            continue;
+        }
+        for kind in syntax.kinds() {
+            assert!(
+                !(kind.owner && kind.declares_type && !kind.interface),
+                "{}: the kind `{}` is a class, but the language says its types do not inherit",
+                name(syntax),
+                kind.name
+            );
+        }
+    }
+}
+
+#[test]
 fn the_sample_shows_each_way_a_call_is_written() {
     for syntax in syntaxes() {
         let language = name(syntax);

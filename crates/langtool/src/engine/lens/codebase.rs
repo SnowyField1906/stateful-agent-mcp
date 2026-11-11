@@ -216,12 +216,22 @@ fn build_graph(
     projects: &[usize],
     origins: &Origins<'_>,
 ) -> Graph {
-    Graph::build(files, projects, &|file, name| {
-        let (label, facts) = &files[file];
-        origins
-            .name_origin(label, &facts.imports, name)
-            .is_some_and(|origin| origin.is_outside())
-    })
+    Graph::build(
+        files,
+        projects,
+        &|file, name| {
+            let (label, facts) = &files[file];
+            origins
+                .name_origin(label, &facts.imports, name)
+                .is_some_and(|origin| origin.is_outside())
+        },
+        &|file, root| {
+            let (label, facts) = &files[file];
+            origins
+                .written_origin(label, &facts.imports, root)
+                .is_some_and(|origin| origin.is_outside())
+        },
+    )
 }
 
 /// The files that are not test code but that test code mentions from other files, and code that is

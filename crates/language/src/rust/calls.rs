@@ -9,6 +9,10 @@ use super::nodes::path_segment;
 use super::receiver::{self, Receiver};
 
 impl Calls for RustSyntax {
+    fn types_inherit_methods(&self) -> bool {
+        false
+    }
+
     fn call_name(&self, node: Node<'_>, source: &str) -> Option<String> {
         if node.kind() != "call_expression" {
             return None;

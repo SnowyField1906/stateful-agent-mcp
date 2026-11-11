@@ -204,6 +204,15 @@ impl<'a> Origins<'a> {
         self.imported(syntax, file, imports, name)
     }
 
+    /// Where the first name of a path written in `file` (`std` in `std::fs::read`, `serde_json` in
+    /// `serde_json::from_str`) comes from: the import that binds it, or in a language that allows
+    /// it the package of that name, so a path that no `use` introduces is told from a project
+    /// module as well. `None` for a name whose origin is not known.
+    pub fn written_origin(&self, file: &str, imports: &[Import], root: &str) -> Option<Origin> {
+        let syntax = registry::for_path(file)?;
+        self.written(syntax, file, imports, root)
+    }
+
     /// The names of the methods that some call in the scan makes on a typed receiver, or through a
     /// written package path, that the standard library or a dependency owns.
     fn outside_methods(&self) -> &HashSet<String> {

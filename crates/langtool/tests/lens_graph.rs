@@ -25,7 +25,7 @@ fn one_project(files: &Files) -> Vec<usize> {
 }
 
 fn graph(files: &Files) -> Graph {
-    Graph::build(files, &one_project(files), &|_, _| false)
+    Graph::build(files, &one_project(files), &|_, _| false, &|_, _| false)
 }
 
 /// The node of the definition `name` in the file called `file`.
@@ -152,9 +152,12 @@ fn a_name_an_import_binds_outside_the_project_is_dropped() {
         ("a.rs", "pub fn parse() {}\n"),
         ("b.rs", "pub fn run() {\n    parse();\n}\n"),
     ]);
-    let graph = Graph::build(&files, &one_project(&files), &|file, name| {
-        file == 1 && name == "parse"
-    });
+    let graph = Graph::build(
+        &files,
+        &one_project(&files),
+        &|file, name| file == 1 && name == "parse",
+        &|_, _| false,
+    );
     let run = node(&files, &graph, "b.rs", "run");
     assert!(graph.uses(run).is_empty());
 }
@@ -165,11 +168,11 @@ fn a_mention_never_crosses_projects() {
         ("a.rs", "pub fn parse() {}\n"),
         ("b.rs", "pub fn run() {\n    parse();\n}\n"),
     ]);
-    let apart = Graph::build(&files, &[0, 1], &|_, _| false);
+    let apart = Graph::build(&files, &[0, 1], &|_, _| false, &|_, _| false);
     let run = node(&files, &apart, "b.rs", "run");
     assert!(apart.uses(run).is_empty());
     assert!(apart.file_edges().is_empty());
-    let together = Graph::build(&files, &[0, 0], &|_, _| false);
+    let together = Graph::build(&files, &[0, 0], &|_, _| false, &|_, _| false);
     assert_eq!(together.uses(run).len(), 1);
 }
 
@@ -193,7 +196,7 @@ fn a_name_is_counted_as_common_within_its_project_only() {
     let files = survey(&refs);
     let mut projects = vec![0, 0];
     projects.extend((1..=6).collect::<Vec<usize>>());
-    let graph = Graph::build(&files, &projects, &|_, _| false);
+    let graph = Graph::build(&files, &projects, &|_, _| false, &|_, _| false);
     let run = node(&files, &graph, "user.rs", "run");
     let edges = graph.uses(run);
     assert_eq!(edges.len(), 1);
@@ -334,16 +337,162 @@ fn a_wrapper_that_delegates_to_another_module_keeps_that_edge() {
 }
 
 #[test]
-fn a_qualifier_that_no_definition_fits_leaves_the_name_to_the_other_rules() {
+fn a_call_on_a_type_the_project_does_not_declare_reaches_nothing() {
     let files = survey(&[
         ("a.rs", "pub fn parse() {}\n"),
         ("b.rs", "pub fn run() {\n    Missing::parse();\n}\n"),
     ]);
     let graph = graph(&files);
     let run = node(&files, &graph, "b.rs", "run");
-    let edges = graph.uses(run);
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].to, node(&files, &graph, "a.rs", "parse"));
+    assert!(graph.uses(run).is_empty());
+}
+
+#[test]
+fn a_call_on_a_value_of_unknown_type_stays_open() {
+    let files = survey(&[
+        (
+            "a.rs",
+            "pub struct P;\n\nimpl P {\n    pub fn parse(&self) {}\n}\n",
+        ),
+        (
+            "b.rs",
+            "pub fn run() {\n    let x = make();\n    x.parse();\n}\n",
+        ),
+    ]);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "b.rs", "run");
+    assert!(targets(&graph, run).contains(&node(&files, &graph, "a.rs", "parse")));
+}
+
+#[test]
+fn a_call_on_a_standard_type_is_not_the_local_method_of_the_same_name() {
+    let files = survey(&[(
+        "a.rs",
+        "pub struct Store;\n\nimpl Store {\n    pub fn new() -> Store {\n        Store\n    }\n\n    pub fn items() -> Vec<u8> {\n        Vec::new()\n    }\n}\n",
+    )]);
+    let graph = graph(&files);
+    let items = node(&files, &graph, "a.rs", "items");
+    assert!(!targets(&graph, items).contains(&node(&files, &graph, "a.rs", "new")));
+}
+
+#[test]
+fn a_sibling_call_to_a_standard_type_does_not_cancel_the_narrowing_of_another() {
+    let mut sources: Vec<(String, String)> = (0..7)
+        .map(|at| {
+            (
+                format!("t{at}.rs"),
+                format!(
+                    "pub struct T{at};\n\nimpl T{at} {{\n    pub fn new() -> T{at} {{\n        T{at}\n    }}\n}}\n"
+                ),
+            )
+        })
+        .collect();
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run() {\n    let _items: Vec<u8> = Vec::new();\n    T3::new();\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let found = targets(&graph, run);
+    assert!(found.contains(&node(&files, &graph, "t3.rs", "new")));
+    for other in [0, 1, 2, 4, 5, 6] {
+        assert!(!found.contains(&node(&files, &graph, &format!("t{other}.rs"), "new")));
+    }
+}
+
+#[test]
+fn a_name_called_in_several_ways_reaches_what_each_way_reaches() {
+    let mut sources = typed_parsers(7);
+    sources.push((
+        "caller.rs".into(),
+        "pub fn run(s: &str) {\n    T1::parse(s);\n    T4::parse(s);\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "caller.rs", "run");
+    let found = targets(&graph, run);
+    for reached in [1, 4] {
+        assert!(found.contains(&node(&files, &graph, &format!("t{reached}.rs"), "parse")));
+    }
+    for other in [0, 2, 3, 5, 6] {
+        assert!(!found.contains(&node(&files, &graph, &format!("t{other}.rs"), "parse")));
+    }
+}
+
+#[test]
+fn a_path_written_through_a_dependency_without_an_import_reaches_nothing_of_the_project() {
+    let files = survey(&[
+        ("a.rs", "pub fn read() {}\n"),
+        ("b.rs", "pub fn run() {\n    std::fs::read();\n}\n"),
+    ]);
+    let run = node(&files, &graph(&files), "b.rs", "run");
+    assert_eq!(graph(&files).uses(run).len(), 1);
+    let caller = 1;
+    let outside = Graph::build(
+        &files,
+        &one_project(&files),
+        &|_, _| false,
+        &|file, root| file == caller && root == "std",
+    );
+    assert!(outside.uses(run).is_empty());
+}
+
+#[test]
+fn a_default_method_of_a_trait_that_the_type_implements_is_reached() {
+    let mut sources = free_functions("helper", 6);
+    sources.push((
+        "tr.rs".into(),
+        "pub trait Tr {\n    fn helper(&self) {}\n}\n".into(),
+    ));
+    sources.push((
+        "foo.rs".into(),
+        "use crate::tr::Tr;\n\npub struct Foo;\n\nimpl Tr for Foo {}\n\nimpl Foo {\n    pub fn run(&self) {\n        self.helper();\n    }\n}\n".into(),
+    ));
+    let files = survey_owned(&sources);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "foo.rs", "run");
+    assert_eq!(
+        targets(&graph, run)
+            .into_iter()
+            .filter(|&to| files[graph.id(to).file].1.defs[graph.id(to).def]
+                .symbol
+                .name
+                == "helper")
+            .collect::<Vec<_>>(),
+        vec![node(&files, &graph, "tr.rs", "helper")]
+    );
+}
+
+#[test]
+fn a_method_that_a_class_inherits_is_not_proved_absent() {
+    let files = survey(&[
+        (
+            "base.py",
+            "class Base:\n    def helper(self):\n        pass\n",
+        ),
+        (
+            "child.py",
+            "from base import Base\n\n\nclass Child(Base):\n    def run(self):\n        self.helper()\n",
+        ),
+    ]);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "child.py", "run");
+    assert!(targets(&graph, run).contains(&node(&files, &graph, "base.py", "helper")));
+}
+
+#[test]
+fn a_method_on_self_that_the_type_does_not_have_is_not_a_function_of_the_same_name() {
+    let files = survey(&[
+        ("a.rs", "pub fn clone() {}\n"),
+        (
+            "b.rs",
+            "pub struct Foo;\n\nimpl Foo {\n    pub fn run(&self) {\n        self.clone();\n    }\n}\n",
+        ),
+    ]);
+    let graph = graph(&files);
+    let run = node(&files, &graph, "b.rs", "run");
+    assert!(!targets(&graph, run).contains(&node(&files, &graph, "a.rs", "clone")));
 }
 
 #[test]
@@ -359,9 +508,12 @@ fn a_path_through_an_import_of_a_dependency_is_not_a_project_module() {
         .iter()
         .position(|(label, _)| label == "caller.rs")
         .unwrap();
-    let graph = Graph::build(&files, &one_project(&files), &|file, name| {
-        file == caller && name == "fs"
-    });
+    let graph = Graph::build(
+        &files,
+        &one_project(&files),
+        &|_, _| false,
+        &|file, root| file == caller && root == "fs",
+    );
     let run = node(&files, &graph, "caller.rs", "run");
     assert!(graph.uses(run).is_empty());
 }

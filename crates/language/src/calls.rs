@@ -35,6 +35,15 @@ pub struct CallSite {
 
 /// The calls of a language.
 pub trait Calls {
+    /// Whether a type can have methods that none of its own definitions holds: methods inherited
+    /// from a base class. A call on such a type that finds no method among those of the type
+    /// proves nothing about where it goes. The default is `true`, so that a language that does not
+    /// say is never taken for one without inheritance; Rust, whose types get methods from `impl`
+    /// blocks and traits only, says `false`.
+    fn types_inherit_methods(&self) -> bool {
+        true
+    }
+
     /// The name a call expression calls (`foo` for `foo(1)`, `bar` for `x.bar()`), or `None`
     /// when `node` is not a call or its target is not a plain name.
     fn call_name(&self, node: Node<'_>, source: &str) -> Option<String>;
